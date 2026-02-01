@@ -1,0 +1,29 @@
+@baseUrl = http://localhost:3000/api
+
+### List All Skills
+GET {{baseUrl}}/skills
+Content-Type: application/json
+
+### List Skills by Org
+GET {{baseUrl}}/skills?owner=vercel-labs
+Content-Type: application/json
+
+### List Skills by Repo
+GET {{baseUrl}}/skills?owner=vercel-labs&repo=agent-skills
+Content-Type: application/json
+
+### Search Skills
+GET {{baseUrl}}/skills?q=react
+Content-Type: application/json
+
+### Sort Skills
+GET {{baseUrl}}/skills?sort_by=name&order=asc
+Content-Type: application/json
+
+### Get Skill Details
+GET {{baseUrl}}/skills/vercel-labs/agent-skills/vercel-react-best-practices
+Content-Type: application/json
+
+### Get Skill Version
+GET {{baseUrl}}/skills/vercel-labs/agent-skills/vercel-react-best-practices/versions/1.0.0
+Content-Type: application/json

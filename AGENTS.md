@@ -10,7 +10,9 @@
   - `api`: Axum 编写的 REST API。
   - `worker`: 异步任务处理器，负责技能发现和同步。
   - `common`: 共享库，包含数据库实体 (SeaORM)、S3 存储和配置逻辑。
-- **前端 (Frontend)**: React (Vite, Tailwind CSS, shadcn/ui)
+- **前端 (Frontend)**: React (Vite)
+  - **样式 (Styling)**: [Tailwind CSS](https://tailwindcss.com/docs/installation/using-vite)
+  - **组件库 (UI Components)**: [shadcn/ui](https://ui.shadcn.com/llms.txt)
 - **数据库**: SQLite (本地开发) / PostgreSQL (生产环境)
 - **对象存储**: S3 兼容存储 (用于存储技能压缩包)
 

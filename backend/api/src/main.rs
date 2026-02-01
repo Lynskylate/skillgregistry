@@ -1,4 +1,5 @@
 mod handlers;
+mod models;
 
 use axum::{
     routing::get,
@@ -54,8 +55,8 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/", get(|| async { "Skill Registry API" }))
         .route("/api/skills", get(handlers::list_skills))
-        .route("/api/skills/:name", get(handlers::get_skill))
-        .route("/api/skills/:name/versions/:version", get(handlers::get_skill_version))
+        .route("/api/skills/:owner/:repo/:name", get(handlers::get_skill))
+        .route("/api/skills/:owner/:repo/:name/versions/:version", get(handlers::get_skill_version))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
