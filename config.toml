@@ -1,0 +1,13 @@
+[database]
+# url = "sqlite://skillregistry.db?mode=rwc"
+
+[s3]
+bucket = "skill-registry-bucket"
+region = "us-east-1"
+# endpoint = "http://localhost:9000"
+
+[github]
+search_keywords = "topic:agent-skill"
+
+[worker]
+scan_interval_seconds = 3600

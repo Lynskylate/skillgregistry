@@ -1,0 +1,30 @@
+# Rust
+**/target/
+
+# Node.js
+**/node_modules/
+**/dist/
+**/build/
+.npm
+.eslintcache
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Databases
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
