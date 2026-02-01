@@ -2,14 +2,11 @@ import { useEffect, useState } from "react"
 import { useParams, Link } from "react-router-dom"
 import axios from "axios"
 import Markdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card" // Need to create Card
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ChevronRight, Calendar, Star, Github, Terminal } from "lucide-react"
-
-// Simple Card Component inline since I didn't create the file yet to save time/calls
-// actually I'll just use divs with classes if Card is missing, but I should probably create it.
-// I'll stick to div classes to be safe and fast.
 
 interface SkillDetail {
   skill: {
@@ -127,7 +124,7 @@ export default function SkillDetail() {
             {activeTab === "readme" && (
               <div className="prose dark:prose-invert max-w-none p-6 border rounded-lg bg-card">
                 {latestVersion?.readme_content ? (
-                  <Markdown>{latestVersion.readme_content}</Markdown>
+                  <Markdown remarkPlugins={[remarkGfm]}>{latestVersion.readme_content}</Markdown>
                 ) : (
                   <div className="text-muted-foreground italic">No README available.</div>
                 )}
@@ -157,24 +154,28 @@ export default function SkillDetail() {
 
         {/* Sidebar */}
         <div className="space-y-6">
-          <div className="border rounded-lg p-6 space-y-4">
-            <h3 className="font-semibold">About</h3>
-            <div className="text-sm text-muted-foreground">
-              Published {new Date(data.skill.created_at).toLocaleDateString()}
-            </div>
-            <div className="text-sm text-muted-foreground">
-              License: MIT (Mock)
-            </div>
-            <div className="pt-4 border-t">
-               <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Maintainer</h4>
-               <div className="flex items-center gap-2">
-                 <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center font-bold text-primary">
-                   {data.registry.owner[0].toUpperCase()}
-                 </div>
-                 <span className="text-sm font-medium">{data.registry.owner}</span>
-               </div>
-            </div>
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">About</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="text-sm text-muted-foreground">
+                Published {new Date(data.skill.created_at).toLocaleDateString()}
+              </div>
+              <div className="text-sm text-muted-foreground">
+                License: MIT (Mock)
+              </div>
+              <div className="pt-4 border-t">
+                <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Maintainer</h4>
+                <div className="flex items-center gap-2">
+                  <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center font-bold text-primary">
+                    {data.registry.owner[0].toUpperCase()}
+                  </div>
+                  <span className="text-sm font-medium">{data.registry.owner}</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>

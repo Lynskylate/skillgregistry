@@ -12,9 +12,12 @@ use md5;
 pub struct SkillFrontmatter {
     pub name: String,
     pub description: String,
+    #[allow(dead_code)]
     pub license: Option<String>,
+    #[allow(dead_code)]
     pub compatibility: Option<String>,
     #[serde(rename = "allowed-tools")]
+    #[allow(dead_code)]
     pub allowed_tools: Option<String>,
     pub metadata: Option<serde_json::Value>,
 }

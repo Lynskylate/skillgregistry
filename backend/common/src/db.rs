@@ -1,4 +1,4 @@
-use sea_orm::{Database, DatabaseConnection, DbErr, ConnectionTrait, Schema, DbBackend};
+use sea_orm::{Database, DatabaseConnection, DbErr, ConnectionTrait, Schema};
 use crate::entities::prelude::*;
 
 pub async fn establish_connection(database_url: &str) -> Result<DatabaseConnection, DbErr> {

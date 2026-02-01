@@ -36,7 +36,6 @@ export default function SkillList() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [skills, setSkills] = useState<Skill[]>([])
   const [loading, setLoading] = useState(false)
-  const [total, setTotal] = useState(0) // Mocking total since API pagination is simple
   
   const q = searchParams.get("q") || ""
   const page = parseInt(searchParams.get("page") || "1")
@@ -67,11 +66,6 @@ export default function SkillList() {
     } finally {
       setLoading(false)
     }
-  }
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault()
-    // Trigger refetch by updating URL which triggers useEffect
   }
 
   return (

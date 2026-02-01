@@ -7,39 +7,29 @@ use chrono::{DateTime, Utc};
 #[derive(Deserialize, Debug)]
 pub struct GithubSearchResponse {
     pub total_count: u32,
-    pub incomplete_results: bool,
     pub items: Vec<GithubRepo>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct GithubCodeSearchResponse {
     pub total_count: u32,
-    pub incomplete_results: bool,
     pub items: Vec<GithubCodeItem>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct GithubCodeItem {
-    pub name: String,
-    pub path: String,
-    pub sha: String,
-    pub url: String,
     pub repository: GithubRepo,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct GithubRepo {
-    pub id: u64,
     pub name: String,
-    pub full_name: String,
     pub html_url: String,
     pub description: Option<String>,
     pub stargazers_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub pushed_at: DateTime<Utc>,
     pub owner: GithubOwner,
-    pub fork: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -49,7 +39,6 @@ pub struct GithubOwner {
 
 pub struct GithubClient {
     client: Client,
-    token: Option<String>,
 }
 
 impl GithubClient {
@@ -64,7 +53,6 @@ impl GithubClient {
 
         Self {
             client: Client::builder().default_headers(headers).build().unwrap(),
-            token,
         }
     }
 
@@ -128,13 +116,6 @@ impl GithubClient {
         }
 
         Ok(all_repos)
-    }
-
-    pub async fn get_repository(&self, owner: &str, repo: &str) -> Result<GithubRepo> {
-        let url = format!("https://api.github.com/repos/{}/{}", owner, repo);
-        let resp = self.send_request_with_retry(&url).await?;
-        let repo: GithubRepo = resp.json().await?;
-        Ok(repo)
     }
 
     pub async fn download_zipball(&self, owner: &str, repo: &str) -> Result<Vec<u8>> {

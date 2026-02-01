@@ -7,7 +7,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use common::db;
 use common::s3::S3Service;
 use common::config::AppConfig;
-use common::entities::{prelude::*, *};
+use common::entities::*;
 use sea_orm::*;
 
 #[tokio::main]

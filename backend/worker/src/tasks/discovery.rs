@@ -136,17 +136,13 @@ mod tests {
         
         github.expect_search_repositories()
             .returning(|_| Ok(vec![GithubRepo {
-                id: 1,
                 name: "test-repo".to_string(),
-                full_name: "test-owner/test-repo".to_string(),
                 owner: GithubOwner { login: "test-owner".to_string() },
                 html_url: "https://github.com/test-owner/test-repo".to_string(),
                 description: Some("test description".to_string()),
                 stargazers_count: 10,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
-                pushed_at: chrono::Utc::now(),
-                fork: false,
             }]));
 
         run(&db, &github, vec!["test-query".to_string()]).await?;

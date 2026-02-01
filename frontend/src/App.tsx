@@ -1,7 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom"
 import SkillList from "./pages/SkillList"
 import SkillDetail from "./pages/SkillDetail"
-import { Search } from "lucide-react"
 
 function App() {
   return (
