@@ -1,5 +1,6 @@
 use anyhow::Result;
 use aws_config::meta::region::RegionProviderChain;
+use aws_config::BehaviorVersion;
 use aws_credential_types::{provider::SharedCredentialsProvider, Credentials};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
@@ -14,23 +15,23 @@ pub struct S3Service {
 }
 
 impl S3Service {
-    pub async fn new(bucket: String, region: String, endpoint: Option<String>) -> Self {
+    pub async fn new(
+        bucket: String,
+        region: String,
+        endpoint: Option<String>,
+        access_key_id: Option<String>,
+        secret_access_key: Option<String>,
+        force_path_style: bool,
+    ) -> Self {
         let region_provider =
             RegionProviderChain::first_try(aws_types::region::Region::new(region))
                 .or_default_provider();
 
-        #[allow(deprecated)]
-        let mut config_loader = aws_config::from_env().region(region_provider);
-
-        let access_key_id = std::env::var("S3_ACCESS_KEY_ID")
-            .ok()
-            .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok());
-        let secret_access_key = std::env::var("S3_ACCESS_KEY_SECRET")
-            .ok()
-            .or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok());
+        let mut config_loader =
+            aws_config::defaults(BehaviorVersion::latest()).region(region_provider);
 
         if let (Some(ak), Some(sk)) = (access_key_id, secret_access_key) {
-            let creds = Credentials::new(ak, sk, None, None, "env");
+            let creds = Credentials::new(ak, sk, None, None, "config");
             config_loader =
                 config_loader.credentials_provider(SharedCredentialsProvider::new(creds));
         }
@@ -65,18 +66,27 @@ impl S3Service {
 
         let is_aliyun_oss = endpoint_for_url.contains("aliyuncs.com");
 
-        let force_path_style = std::env::var("S3_FORCE_PATH_STYLE")
-            .ok()
-            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(endpoint_present && !is_aliyun_oss);
+        // Use the passed force_path_style, but fallback to logic if not explicitly set (which it is now)
+        // Actually, if it's passed as true, we use it.
+        // If it's false, we might still need the aliyun logic?
+        // Let's assume the config source of truth is `force_path_style` from settings.
+        // But `endpoint_present && !is_aliyun_oss` was the old default logic.
+        // If the user didn't set it in config (default false), but needs it?
+        // Let's rely on the passed value OR the inference.
+
+        let final_force_path_style = if force_path_style {
+            true
+        } else {
+            endpoint_present && !is_aliyun_oss
+        };
 
         let s3_config = aws_sdk_s3::config::Builder::from(&config)
-            .force_path_style(force_path_style)
+            .force_path_style(final_force_path_style)
             .build();
 
         let client = Client::from_conf(s3_config);
 
-        let base_url = if is_aliyun_oss && !force_path_style {
+        let base_url = if is_aliyun_oss && !final_force_path_style {
             let host = endpoint_for_url
                 .trim_start_matches("https://")
                 .trim_start_matches("http://");

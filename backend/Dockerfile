@@ -1,5 +1,11 @@
 FROM rust:1.93.0-bookworm AS chef
 
+# Configure Cargo Mirror
+ARG CARGO_REGISTRIES_CRATES_IO_INDEX=https://github.com/rust-lang/crates.io-index
+ENV CARGO_REGISTRIES_CRATES_IO_INDEX=$CARGO_REGISTRIES_CRATES_IO_INDEX
+# Also Configure Sparse Index (Optional but recommended for speed)
+ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+
 # Install protoc
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
