@@ -1,0 +1,20 @@
+[package]
+name = "saga"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.32", features = ["full"] }
+anyhow = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+uuid = { version = "1.0", features = ["v4"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Temporal Dependencies
+temporalio-sdk = { git = "https://github.com/temporalio/sdk-core", branch = "master" }
+temporalio-sdk-core = { git = "https://github.com/temporalio/sdk-core", branch = "master" }
+temporalio-client = { git = "https://github.com/temporalio/sdk-core", branch = "master" }
+temporalio-common = { git = "https://github.com/temporalio/sdk-core", branch = "master" }

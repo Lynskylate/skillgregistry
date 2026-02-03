@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "helloworld",
+    "batch-sliding-window",
+    "saga",
+]
+resolver = "2"
