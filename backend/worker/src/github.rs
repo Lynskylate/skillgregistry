@@ -43,7 +43,7 @@ pub struct GithubClient {
 }
 
 impl GithubClient {
-    pub fn new(token: Option<String>, api_url: Option<String>) -> Self {
+    pub fn new(token: Option<String>, api_url: String) -> Self {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("User-Agent", "SkillRegistry/1.0".parse().unwrap());
         headers.insert("Accept", "application/vnd.github.v3+json".parse().unwrap());
@@ -54,7 +54,7 @@ impl GithubClient {
 
         Self {
             client: Client::builder().default_headers(headers).build().unwrap(),
-            api_url: api_url.unwrap_or_else(|| "https://api.github.com".to_string()),
+            api_url,
         }
     }
 
