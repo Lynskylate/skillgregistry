@@ -7,7 +7,7 @@ use temporalio_common::{
     worker::{WorkerConfig, WorkerTaskTypes, WorkerVersioningStrategy},
 };
 use temporalio_sdk::{
-    sdk_client_options, ActContext, ActivityError, ActivityOptions, WfContext, WfExitValue, Worker,
+    ActContext, ActivityError, ActivityOptions, WfContext, WfExitValue, Worker,
     WorkflowResult,
 };
 use temporalio_sdk_core::{init_worker, CoreRuntime, RuntimeOptions, Url};
@@ -32,7 +32,7 @@ enum Commands {
 }
 
 const TASK_QUEUE: &str = "hello-world-q";
-const WORKFLOW_ID: &str = "hello-world-workflow-id";
+// const WORKFLOW_ID: &str = "hello-world-workflow-id";
 const WORKFLOW_TYPE: &str = "hello-world-workflow";
 const ACTIVITY_TYPE: &str = "say-hello-activity";
 

@@ -1,7 +1,7 @@
-pub mod entities;
-pub mod db;
-pub mod s3;
 pub mod config;
+pub mod db;
+pub mod entities;
+pub mod s3;
 
 use sea_orm::DatabaseConnection;
 

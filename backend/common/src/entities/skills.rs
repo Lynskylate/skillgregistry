@@ -15,7 +15,11 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(belongs_to = "super::skill_registry::Entity", from = "Column::SkillRegistryId", to = "super::skill_registry::Column::Id")]
+    #[sea_orm(
+        belongs_to = "super::skill_registry::Entity",
+        from = "Column::SkillRegistryId",
+        to = "super::skill_registry::Column::Id"
+    )]
     SkillRegistry,
     #[sea_orm(has_many = "super::skill_versions::Entity")]
     Versions,

@@ -1,5 +1,5 @@
+use config::{Config, Environment, File};
 use serde::Deserialize;
-use config::{Config, File, Environment};
 
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {

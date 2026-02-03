@@ -8,7 +8,7 @@ use temporalio_common::{
     worker::{WorkerConfig, WorkerTaskTypes, WorkerVersioningStrategy},
 };
 use temporalio_sdk::{
-    sdk_client_options, ActContext, ActivityError, ActivityOptions, WfContext, WfExitValue, Worker,
+    ActContext, ActivityError, ActivityOptions, WfContext, WfExitValue, Worker,
     WorkflowResult, CancellableFuture
 };
 use temporalio_sdk_core::{init_worker, CoreRuntime, RuntimeOptions, Url};
@@ -28,7 +28,7 @@ enum Commands {
 }
 
 const TASK_QUEUE: &str = "batch-sliding-window-q";
-const WORKFLOW_ID: &str = "batch-sliding-window-workflow-id";
+// const WORKFLOW_ID: &str = "batch-sliding-window-workflow-id";
 const WORKFLOW_TYPE: &str = "batch-sliding-window-workflow";
 const ACTIVITY_TYPE: &str = "process-batch-activity";
 const SIGNAL_NAME: &str = "add-item";
@@ -176,8 +176,8 @@ async fn batch_workflow(ctx: WfContext) -> WorkflowResult<String> {
 
     loop {
         let mut timer = ctx.timer(timeout);
-        let mut signal_recv = signal_chan.next();
-        let mut finish_recv = finish_chan.next();
+        let signal_recv = signal_chan.next();
+        let finish_recv = finish_chan.next();
 
         // Wait for either a signal or a timer
         tokio::select! {

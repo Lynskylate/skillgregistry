@@ -1,17 +1,14 @@
 mod handlers;
 mod models;
 
-use axum::{
-    routing::get,
-    Router,
-};
+use axum::{routing::get, Router};
+use common::config::AppConfig;
+use common::db;
+use sea_orm::DatabaseConnection;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use common::db;
-use common::config::AppConfig;
-use sea_orm::DatabaseConnection;
 use tower_http::cors::CorsLayer;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 pub struct AppState {
     pub db: DatabaseConnection,
@@ -44,10 +41,11 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AppConfig::new().expect("Failed to load configuration");
 
-    let db_url = std::env::var("DATABASE_URL").ok()
+    let db_url = std::env::var("DATABASE_URL")
+        .ok()
         .or(config.database.as_ref().and_then(|d| d.url.clone()))
         .unwrap_or_else(|| "sqlite://skillregistry.db?mode=rwc".to_string());
-        
+
     let db = db::establish_connection(&db_url).await?;
 
     let state = Arc::new(AppState { db });
@@ -56,7 +54,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(|| async { "Skill Registry API" }))
         .route("/api/skills", get(handlers::list_skills))
         .route("/api/skills/:owner/:repo/:name", get(handlers::get_skill))
-        .route("/api/skills/:owner/:repo/:name/versions/:version", get(handlers::get_skill_version))
+        .route(
+            "/api/skills/:owner/:repo/:name/versions/:version",
+            get(handlers::get_skill_version),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state);
 

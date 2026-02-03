@@ -7,7 +7,7 @@ use temporalio_common::{
     worker::{WorkerConfig, WorkerTaskTypes, WorkerVersioningStrategy},
 };
 use temporalio_sdk::{
-    sdk_client_options, ActContext, ActivityError, ActivityOptions, WfContext, WfExitValue, Worker,
+    ActContext, ActivityError, ActivityOptions, WfContext, WfExitValue, Worker,
     WorkflowResult,
 };
 use temporalio_sdk_core::{init_worker, CoreRuntime, RuntimeOptions, Url};
@@ -27,7 +27,7 @@ enum Commands {
 }
 
 const TASK_QUEUE: &str = "saga-q";
-const WORKFLOW_ID: &str = "saga-workflow-id";
+// const WORKFLOW_ID: &str = "saga-workflow-id";
 const WORKFLOW_TYPE: &str = "saga-workflow";
 
 // Activities

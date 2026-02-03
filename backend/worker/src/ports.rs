@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 #[cfg(test)]
 use mockall::automock;
 
@@ -41,4 +41,3 @@ impl Storage for S3Service {
         self.upload_file(key, body).await
     }
 }
-

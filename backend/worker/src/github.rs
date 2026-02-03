@@ -1,8 +1,8 @@
-use serde::Deserialize;
-use reqwest::{Client, Response, StatusCode};
 use anyhow::Result;
-use std::time::Duration;
 use chrono::{DateTime, Utc};
+use reqwest::{Client, Response, StatusCode};
+use serde::Deserialize;
+use std::time::Duration;
 
 #[derive(Deserialize, Debug)]
 pub struct GithubSearchResponse {
@@ -46,7 +46,7 @@ impl GithubClient {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("User-Agent", "SkillRegistry/1.0".parse().unwrap());
         headers.insert("Accept", "application/vnd.github.v3+json".parse().unwrap());
-        
+
         if let Some(ref t) = token {
             headers.insert("Authorization", format!("Bearer {}", t).parse().unwrap());
         }
@@ -62,7 +62,10 @@ impl GithubClient {
         let per_page = 100;
 
         loop {
-            let url = format!("https://api.github.com/search/repositories?q={}&per_page={}&page={}", query, per_page, page);
+            let url = format!(
+                "https://api.github.com/search/repositories?q={}&per_page={}&page={}",
+                query, per_page, page
+            );
             tracing::debug!("Fetching page {}: {}", page, url);
 
             let resp = self.send_request_with_retry(&url).await?;
@@ -77,7 +80,7 @@ impl GithubClient {
             if all_repos.len() >= search_resp.total_count as usize || all_repos.len() >= 1000 {
                 break;
             }
-            
+
             page += 1;
         }
 
@@ -92,7 +95,10 @@ impl GithubClient {
         // Code search rate limits are stricter, and results per page max is 100.
         // Also total results are limited to 1000.
         loop {
-            let url = format!("https://api.github.com/search/code?q={}&per_page={}&page={}", query, per_page, page);
+            let url = format!(
+                "https://api.github.com/search/code?q={}&per_page={}&page={}",
+                query, per_page, page
+            );
             tracing::debug!("Fetching code page {}: {}", page, url);
 
             let resp = self.send_request_with_retry(&url).await?;
@@ -102,16 +108,16 @@ impl GithubClient {
                 break;
             }
 
-            // Code search returns items with minimal repo info. 
+            // Code search returns items with minimal repo info.
             // The `repository` field in GithubCodeItem contains the GithubRepo structure
             for item in search_resp.items {
-                 all_repos.push(item.repository);
+                all_repos.push(item.repository);
             }
 
             if all_repos.len() >= search_resp.total_count as usize || all_repos.len() >= 1000 {
                 break;
             }
-            
+
             page += 1;
         }
 
@@ -130,30 +136,40 @@ impl GithubClient {
         loop {
             attempts += 1;
             let resp = self.client.get(url).send().await?;
-            
+
             match resp.status() {
                 StatusCode::OK => return Ok(resp),
                 StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS => {
                     if attempts >= 5 {
-                        return Err(anyhow::anyhow!("Rate limit exceeded after {} attempts", attempts));
+                        return Err(anyhow::anyhow!(
+                            "Rate limit exceeded after {} attempts",
+                            attempts
+                        ));
                     }
-                    
+
                     let wait_time = if let Some(retry_after) = resp.headers().get("Retry-After") {
                         retry_after.to_str().unwrap_or("60").parse().unwrap_or(60)
                     } else {
-                        60 
+                        60
                     };
-                    
+
                     tracing::warn!("Rate limit hit, waiting {}s...", wait_time);
                     tokio::time::sleep(Duration::from_secs(wait_time)).await;
-                },
+                }
                 StatusCode::UNPROCESSABLE_ENTITY => {
-                     // 422 usually means validation failed, e.g. search query too long or specific constraints
-                     return Err(anyhow::anyhow!("Unprocessable Entity (422) on url {}. Check query syntax.", url));
+                    // 422 usually means validation failed, e.g. search query too long or specific constraints
+                    return Err(anyhow::anyhow!(
+                        "Unprocessable Entity (422) on url {}. Check query syntax.",
+                        url
+                    ));
                 }
                 _ => {
                     if attempts >= 3 {
-                         return Err(anyhow::anyhow!("Request failed: {} on url {}", resp.status(), url));
+                        return Err(anyhow::anyhow!(
+                            "Request failed: {} on url {}",
+                            resp.status(),
+                            url
+                        ));
                     }
                     tokio::time::sleep(Duration::from_secs(2u64.pow(attempts))).await;
                 }

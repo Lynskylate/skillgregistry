@@ -1,10 +1,14 @@
-use anyhow::Result;
-use sea_orm::*;
-use common::entities::{prelude::*, *};
 use crate::ports::GithubApi;
+use anyhow::Result;
+use common::entities::{prelude::*, *};
+use sea_orm::*;
 use std::collections::HashSet;
 
-pub async fn run(db: &DatabaseConnection, github: &impl GithubApi, queries: Vec<String>) -> Result<()> {
+pub async fn run(
+    db: &DatabaseConnection,
+    github: &impl GithubApi,
+    queries: Vec<String>,
+) -> Result<()> {
     tracing::info!("Starting discovery task...");
 
     let mut new_count = 0;
@@ -13,8 +17,11 @@ pub async fn run(db: &DatabaseConnection, github: &impl GithubApi, queries: Vec<
 
     for query in &queries {
         tracing::info!("Searching for query: {}", query);
-        
-        let repos_result = if query.contains("filename:") || query.contains("path:") || query.contains("extension:") {
+
+        let repos_result = if query.contains("filename:")
+            || query.contains("path:")
+            || query.contains("extension:")
+        {
             github.search_code(query).await
         } else {
             let q = if !query.contains("sort:") {
@@ -28,7 +35,7 @@ pub async fn run(db: &DatabaseConnection, github: &impl GithubApi, queries: Vec<
         match repos_result {
             Ok(repos) => {
                 tracing::info!("Found {} repositories for query '{}'", repos.len(), query);
-                
+
                 for repo in repos {
                     let repo_key = format!("{}/{}", repo.owner.login, repo.name);
                     if processed_repos.contains(&repo_key) {
@@ -41,9 +48,13 @@ pub async fn run(db: &DatabaseConnection, github: &impl GithubApi, queries: Vec<
                         .filter(blacklist::Column::RepositoryUrl.eq(&repo.html_url))
                         .one(db)
                         .await?;
-                    
+
                     if let Some(b) = blacklisted {
-                        tracing::info!("Skipping blacklisted repo: {} (Reason: {})", repo_key, b.reason);
+                        tracing::info!(
+                            "Skipping blacklisted repo: {} (Reason: {})",
+                            repo_key,
+                            b.reason
+                        );
                         continue;
                     }
 
@@ -65,10 +76,10 @@ pub async fn run(db: &DatabaseConnection, github: &impl GithubApi, queries: Vec<
                     } else {
                         // Insert new
                         // Note: If code search returned partial repo info, we might want to fetch full details
-                        // But GithubCodeItem.repository seems to have most fields. 
+                        // But GithubCodeItem.repository seems to have most fields.
                         // However, description might be missing or stars might be 0 in some contexts?
                         // Let's trust it for now, or fetch if critical fields missing.
-                        
+
                         let new_repo = skill_registry::ActiveModel {
                             platform: Set(skill_registry::Platform::Github),
                             owner: Set(repo.owner.login.clone()),
@@ -86,24 +97,28 @@ pub async fn run(db: &DatabaseConnection, github: &impl GithubApi, queries: Vec<
                         tracing::info!("Discovered new repo: {}", repo_key);
                     }
                 }
-            },
+            }
             Err(e) => {
                 tracing::error!("Search failed for query '{}': {}", query, e);
             }
         }
     }
 
-    tracing::info!("Discovery task completed. New: {}, Updated: {}", new_count, updated_count);
+    tracing::info!(
+        "Discovery task completed. New: {}, Updated: {}",
+        new_count,
+        updated_count
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::{GithubOwner, GithubRepo};
     use crate::ports::MockGithubApi;
-    use crate::github::{GithubRepo, GithubOwner};
-    use sea_orm::DatabaseBackend;
     use common::entities::skill_registry;
+    use sea_orm::DatabaseBackend;
 
     #[tokio::test]
     async fn test_discovery_new_repo() -> Result<()> {
@@ -124,26 +139,27 @@ mod tests {
                     last_scanned_at: Some(chrono::Utc::now().naive_utc()),
                 }], // Result of the SELECT after INSERT
             ])
-            .append_exec_results(vec![
-                MockExecResult {
-                    last_insert_id: 1,
-                    rows_affected: 1,
-                },
-            ])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 1,
+                rows_affected: 1,
+            }])
             .into_connection();
 
         let mut github = MockGithubApi::new();
-        
-        github.expect_search_repositories()
-            .returning(|_| Ok(vec![GithubRepo {
+
+        github.expect_search_repositories().returning(|_| {
+            Ok(vec![GithubRepo {
                 name: "test-repo".to_string(),
-                owner: GithubOwner { login: "test-owner".to_string() },
+                owner: GithubOwner {
+                    login: "test-owner".to_string(),
+                },
                 html_url: "https://github.com/test-owner/test-repo".to_string(),
                 description: Some("test description".to_string()),
                 stargazers_count: 10,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
-            }]));
+            }])
+        });
 
         run(&db, &github, vec!["test-query".to_string()]).await?;
 
@@ -156,7 +172,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Sqlite)
             .append_query_results::<skill_registry::Model, _, _>(vec![
                 vec![], // Blacklist check
-                vec![skill_registry::Model {         // Existence check
+                vec![skill_registry::Model {
+                    // Existence check
                     id: 1,
                     platform: skill_registry::Platform::Github,
                     owner: "test-owner".to_string(),
@@ -168,7 +185,8 @@ mod tests {
                     updated_at: chrono::Utc::now().naive_utc(),
                     last_scanned_at: None,
                 }],
-                vec![skill_registry::Model {         // Result after UPDATE
+                vec![skill_registry::Model {
+                    // Result after UPDATE
                     id: 1,
                     platform: skill_registry::Platform::Github,
                     owner: "test-owner".to_string(),
@@ -181,22 +199,22 @@ mod tests {
                     last_scanned_at: None,
                 }],
             ])
-            .append_exec_results(vec![
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 1,
-                },
-            ])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
             .into_connection();
 
         let mut github = MockGithubApi::new();
-        
-        github.expect_search_repositories()
-            .returning(|_| Ok(vec![GithubRepo {
+
+        github.expect_search_repositories().returning(|_| {
+            Ok(vec![GithubRepo {
                 id: 1,
                 name: "test-repo".to_string(),
                 full_name: "test-owner/test-repo".to_string(),
-                owner: GithubOwner { login: "test-owner".to_string() },
+                owner: GithubOwner {
+                    login: "test-owner".to_string(),
+                },
                 html_url: "https://github.com/test-owner/test-repo".to_string(),
                 description: Some("old description".to_string()),
                 stargazers_count: 10, // Stars updated from 5 to 10
@@ -204,7 +222,8 @@ mod tests {
                 updated_at: chrono::Utc::now(),
                 pushed_at: chrono::Utc::now(),
                 fork: false,
-            }]));
+            }])
+        });
 
         run(&db, &github, vec!["test-query".to_string()]).await?;
 

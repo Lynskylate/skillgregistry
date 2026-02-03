@@ -1,5 +1,5 @@
-use sea_orm::{Database, DatabaseConnection, DbErr, ConnectionTrait, Schema};
 use crate::entities::prelude::*;
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, Schema};
 
 pub async fn establish_connection(database_url: &str) -> Result<DatabaseConnection, DbErr> {
     let db = Database::connect(database_url).await?;
@@ -9,7 +9,11 @@ pub async fn establish_connection(database_url: &str) -> Result<DatabaseConnecti
     let schema = Schema::new(builder);
 
     // Create tables if not exist
-    let stmt = builder.build(schema.create_table_from_entity(SkillRegistry).if_not_exists());
+    let stmt = builder.build(
+        schema
+            .create_table_from_entity(SkillRegistry)
+            .if_not_exists(),
+    );
     match db.execute(stmt).await {
         Ok(_) => tracing::info!("Ensured table skill_registry exists"),
         Err(e) => tracing::warn!("Failed to create table skill_registry: {}", e),
@@ -21,7 +25,11 @@ pub async fn establish_connection(database_url: &str) -> Result<DatabaseConnecti
         Err(e) => tracing::warn!("Failed to create table skills: {}", e),
     }
 
-    let stmt = builder.build(schema.create_table_from_entity(SkillVersions).if_not_exists());
+    let stmt = builder.build(
+        schema
+            .create_table_from_entity(SkillVersions)
+            .if_not_exists(),
+    );
     match db.execute(stmt).await {
         Ok(_) => tracing::info!("Ensured table skill_versions exists"),
         Err(e) => tracing::warn!("Failed to create table skill_versions: {}", e),

@@ -1,3 +1,5 @@
+use crate::models::ApiResponse;
+use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
     Json,
@@ -6,8 +8,6 @@ use common::entities::{prelude::*, *};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::AppState;
-use crate::models::ApiResponse;
 
 #[derive(Deserialize)]
 pub struct SearchParams {
@@ -40,8 +40,7 @@ pub async fn list_skills(
     let per_page = params.per_page.unwrap_or(20);
 
     // Start with finding skills and also related registry
-    let mut query = Skills::find()
-        .find_also_related(SkillRegistry);
+    let mut query = Skills::find().find_also_related(SkillRegistry);
 
     // Filter by Owner
     if let Some(owner) = &params.owner {
@@ -57,7 +56,7 @@ pub async fn list_skills(
     if let Some(q) = &params.q {
         query = query.filter(skills::Column::Name.contains(q));
     }
-    
+
     // Sort logic
     match params.sort_by.as_deref() {
         Some("name") => {
@@ -119,13 +118,13 @@ pub async fn get_skill(
     Path((owner, repo, name)): Path<(String, String, String)>,
 ) -> Json<ApiResponse<serde_json::Value>> {
     let db = &state.db;
-    
+
     // Find Registry first
     let registry = match SkillRegistry::find()
         .filter(skill_registry::Column::Owner.eq(&owner))
         .filter(skill_registry::Column::Name.eq(&repo))
         .one(db)
-        .await 
+        .await
     {
         Ok(Some(r)) => r,
         Ok(None) => return Json(ApiResponse::error(404, "Repository not found".to_string())),
@@ -167,7 +166,7 @@ pub async fn get_skill_version(
         .filter(skill_registry::Column::Owner.eq(&owner))
         .filter(skill_registry::Column::Name.eq(&repo))
         .one(db)
-        .await 
+        .await
     {
         Ok(Some(r)) => r,
         Ok(None) => return Json(ApiResponse::error(404, "Repository not found".to_string())),
