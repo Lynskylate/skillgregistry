@@ -243,8 +243,10 @@ async fn find_registry_by_host(
     org: &str,
     repo: &str,
 ) -> Result<Option<skill_registry::Model>, DbErr> {
-    let url_https = format!("https://{}/%", host);
-    let url_http = format!("http://{}/%", host);
+    // Construct exact URLs based on the known format from discovery
+    // URLs are stored as https://host/owner/repo or http://host/owner/repo
+    let url_https = format!("https://{}/{}/{}", host, org, repo);
+    let url_http = format!("http://{}/{}/{}", host, org, repo);
 
     SkillRegistry::find()
         .filter(skill_registry::Column::Owner.eq(org))
@@ -252,8 +254,8 @@ async fn find_registry_by_host(
         .filter(skill_registry::Column::Status.ne("blacklisted"))
         .filter(
             Condition::any()
-                .add(skill_registry::Column::Url.like(url_https))
-                .add(skill_registry::Column::Url.like(url_http)),
+                .add(skill_registry::Column::Url.eq(url_https))
+                .add(skill_registry::Column::Url.eq(url_http)),
         )
         .one(db)
         .await
