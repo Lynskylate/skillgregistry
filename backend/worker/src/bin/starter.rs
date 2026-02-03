@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::env;
+use common::settings::Settings;
 use std::str::FromStr;
 use temporalio_client::{ClientOptions, WorkflowClientTrait, WorkflowOptions};
 use temporalio_sdk_core::Url;
@@ -11,8 +11,9 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let server_url =
-        env::var("TEMPORAL_SERVER_URL").unwrap_or_else(|_| "http://localhost:7233".to_string());
+    let settings = Settings::new().expect("Failed to load configuration");
+    let server_url = settings.temporal.server_url;
+    let task_queue = settings.temporal.task_queue;
 
     let client_options = ClientOptions::builder()
         .target_url(Url::from_str(&server_url)?)
@@ -34,7 +35,7 @@ async fn main() -> Result<()> {
     client
         .start_workflow(
             vec![],
-            "skill-registry-queue".to_string(),
+            task_queue.clone(),
             discovery_id.clone(),
             "discovery_workflow".to_string(),
             None,
@@ -49,7 +50,7 @@ async fn main() -> Result<()> {
     client
         .start_workflow(
             vec![],
-            "skill-registry-queue".to_string(),
+            task_queue,
             sync_id.clone(),
             "sync_scheduler_workflow".to_string(),
             None,

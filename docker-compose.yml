@@ -49,10 +49,13 @@ services:
       args:
         - RUST_VERSION=1.93.0-bookworm
     command: ["/app/api"]
-    env_file:
-      - .env
     environment:
       - DATABASE_URL=postgres://postgres:password@postgres:5432/skillregistry
+      - S3_ENDPOINT=http://rustfs:9000
+      - S3_BUCKET=skills
+      - S3_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=rustfsadmin
+      - AWS_SECRET_ACCESS_KEY=rustfsadmin
       - TEMPORAL_SERVER_URL=http://temporal:7233
       - RUST_LOG=info
     ports:
@@ -73,10 +76,13 @@ services:
       args:
         - RUST_VERSION=1.93.0-bookworm
     command: ["/app/worker"]
-    env_file:
-      - .env
     environment:
       - DATABASE_URL=postgres://postgres:password@postgres:5432/skillregistry
+      - S3_ENDPOINT=http://rustfs:9000
+      - S3_BUCKET=skills
+      - S3_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=rustfsadmin
+      - AWS_SECRET_ACCESS_KEY=rustfsadmin
       - TEMPORAL_SERVER_URL=http://temporal:7233
       - RUST_LOG=info
     depends_on:
@@ -95,10 +101,13 @@ services:
       args:
         - RUST_VERSION=1.93.0-bookworm
     command: ["/app/setup"]
-    env_file:
-      - .env
     environment:
       - DATABASE_URL=postgres://postgres:password@postgres:5432/skillregistry
+      - S3_ENDPOINT=http://rustfs:9000
+      - S3_BUCKET=skills
+      - S3_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=rustfsadmin
+      - AWS_SECRET_ACCESS_KEY=rustfsadmin
       - TEMPORAL_SERVER_URL=http://temporal:7233
       - RUST_LOG=info
     depends_on:

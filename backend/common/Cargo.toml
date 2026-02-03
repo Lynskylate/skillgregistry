@@ -23,4 +23,7 @@ hex = "0.4"
 walkdir = "2.4"
 zip = "0.6"
 base64 = "0.21"
-config = "0.13"
+clap = { version = "4.4", features = ["derive", "env"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+dotenvy = "0.15"
+dirs = "5.0"

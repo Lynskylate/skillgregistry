@@ -39,10 +39,11 @@ pub struct GithubOwner {
 
 pub struct GithubClient {
     client: Client,
+    api_url: String,
 }
 
 impl GithubClient {
-    pub fn new(token: Option<String>) -> Self {
+    pub fn new(token: Option<String>, api_url: String) -> Self {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("User-Agent", "SkillRegistry/1.0".parse().unwrap());
         headers.insert("Accept", "application/vnd.github.v3+json".parse().unwrap());
@@ -53,6 +54,7 @@ impl GithubClient {
 
         Self {
             client: Client::builder().default_headers(headers).build().unwrap(),
+            api_url,
         }
     }
 
@@ -63,8 +65,8 @@ impl GithubClient {
 
         loop {
             let url = format!(
-                "https://api.github.com/search/repositories?q={}&per_page={}&page={}",
-                query, per_page, page
+                "{}/search/repositories?q={}&per_page={}&page={}",
+                self.api_url, query, per_page, page
             );
             tracing::debug!("Fetching page {}: {}", page, url);
 
@@ -96,8 +98,8 @@ impl GithubClient {
         // Also total results are limited to 1000.
         loop {
             let url = format!(
-                "https://api.github.com/search/code?q={}&per_page={}&page={}",
-                query, per_page, page
+                "{}/search/code?q={}&per_page={}&page={}",
+                self.api_url, query, per_page, page
             );
             tracing::debug!("Fetching code page {}: {}", page, url);
 
@@ -125,7 +127,7 @@ impl GithubClient {
     }
 
     pub async fn download_zipball(&self, owner: &str, repo: &str) -> Result<Vec<u8>> {
-        let url = format!("https://api.github.com/repos/{}/{}/zipball", owner, repo);
+        let url = format!("{}/repos/{}/{}/zipball", self.api_url, owner, repo);
         let resp = self.send_request_with_retry(&url).await?;
         let bytes = resp.bytes().await?;
         Ok(bytes.to_vec())

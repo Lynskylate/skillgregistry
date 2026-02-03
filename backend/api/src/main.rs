@@ -2,8 +2,8 @@ mod handlers;
 mod models;
 
 use axum::{routing::get, Router};
-use common::config::AppConfig;
 use common::db;
+use common::settings::Settings;
 use sea_orm::DatabaseConnection;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -12,25 +12,12 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 pub struct AppState {
     pub db: DatabaseConnection,
+    pub settings: Settings,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if dotenv::dotenv().is_err() {
-        if let Ok(cwd) = std::env::current_dir() {
-            let candidates = [
-                cwd.join(".env"),
-                cwd.join("../.env"),
-                cwd.join("../../.env"),
-                cwd.join("../../../.env"),
-            ];
-            for p in candidates {
-                if p.exists() && dotenv::from_path(&p).is_ok() {
-                    break;
-                }
-            }
-        }
-    }
+    let settings = Settings::new().expect("Failed to load configuration");
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
@@ -39,16 +26,14 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let config = AppConfig::new().expect("Failed to load configuration");
-
-    let db_url = std::env::var("DATABASE_URL")
-        .ok()
-        .or(config.database.as_ref().and_then(|d| d.url.clone()))
-        .unwrap_or_else(|| "sqlite://skillregistry.db?mode=rwc".to_string());
+    let db_url = settings.database.url.clone();
 
     let db = db::establish_connection(&db_url).await?;
 
-    let state = Arc::new(AppState { db });
+    let state = Arc::new(AppState {
+        db,
+        settings: settings.clone(),
+    });
 
     let app = Router::new()
         .route("/", get(|| async { "Skill Registry API" }))
@@ -61,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], settings.port));
     tracing::info!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
