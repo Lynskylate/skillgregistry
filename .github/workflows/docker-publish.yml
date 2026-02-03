@@ -43,6 +43,8 @@ jobs:
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
             type=semver,pattern={{version}}
 
       - name: Build and push Docker image
