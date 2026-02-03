@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
 
     let github = github::GithubClient::new(
         settings.github.token.clone(),
-        Some(settings.github.api_url.clone()),
+        settings.github.api_url.clone(),
     );
 
     // Initialize AppState
