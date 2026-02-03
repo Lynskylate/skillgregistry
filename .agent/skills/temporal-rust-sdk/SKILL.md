@@ -43,6 +43,12 @@ Implements the Saga pattern for distributed transactions:
 - Triggers a **Compensation** phase to undo previous actions (Cancel Hotel -> Cancel Car) in reverse order.
 - Demonstrates how to return structured results from a Workflow.
 
+### 4. Local Activity (`localactivity`)
+Demonstrates how to execute a Local Activity from a Workflow:
+- Runs a Local Activity to sanitize workflow input (fast, no external calls).
+- Runs a normal Activity to produce the final result.
+- Shows how to configure basic Local Activity timeouts.
+
 ## Usage Guide
 
 ### Prerequisites
@@ -59,7 +65,7 @@ cd examples
 
 **Step 1: Start the Worker**
 ```bash
-# Replace <package> with: helloworld, batch-sliding-window, or saga
+# Replace <package> with: helloworld, batch-sliding-window, saga, or localactivity
 cargo run -p <package> -- worker
 ```
 
@@ -67,6 +73,10 @@ cargo run -p <package> -- worker
 ```bash
 cargo run -p <package> -- starter
 ```
+
+### Configuration
+- `TEMPORAL_SERVER_URL` (default: `http://localhost:7233`)
+- `TEMPORAL_NAMESPACE` (default: `default`)
 
 ## Implementation Details
 

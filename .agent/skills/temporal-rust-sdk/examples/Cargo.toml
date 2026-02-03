@@ -3,5 +3,7 @@ members = [
     "helloworld",
     "batch-sliding-window",
     "saga",
+    "examples-shared",
+    "localactivity",
 ]
 resolver = "2"

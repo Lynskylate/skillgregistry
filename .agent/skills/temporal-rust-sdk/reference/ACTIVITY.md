@@ -35,3 +35,35 @@ async fn failure_activity(_ctx: ActContext, _: ()) -> Result<(), ActivityError> 
     // Err(ActivityError::NonRetryable(anyhow!("Invalid config")))
 }
 ```
+
+## 3. Local Activities
+
+Local Activities execute on the same Worker as the Workflow and avoid scheduling/polling overhead with the Temporal service.
+
+Use Local Activities for fast operations that do not require external calls (or can be safely retried and are effectively idempotent).
+
+```rust
+use std::time::Duration;
+use temporalio_sdk::{LocalActivityOptions, WfContext};
+
+async fn example_workflow(ctx: WfContext) -> temporalio_sdk::WorkflowResult<String> {
+    let payload = temporalio_common::protos::temporal::api::common::v1::Payload {
+        metadata: std::collections::HashMap::from([(
+            "encoding".to_string(),
+            "json/plain".as_bytes().to_vec(),
+        )]),
+        data: serde_json::to_vec(&"input").unwrap(),
+        ..Default::default()
+    };
+
+    let opts = LocalActivityOptions {
+        activity_type: "sanitize-name".to_string(),
+        start_to_close_timeout: Some(Duration::from_secs(2)),
+        input: payload,
+        ..Default::default()
+    };
+
+    let _res = ctx.local_activity(opts).await;
+    Ok(temporalio_sdk::WfExitValue::Normal("ok".to_string()))
+}
+```
