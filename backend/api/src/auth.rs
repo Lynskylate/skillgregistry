@@ -1882,29 +1882,7 @@ fn sha256_hex(input: &str) -> String {
 fn random_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    base64_url(&bytes)
-}
-
-fn base64_url(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b0 = bytes[i];
-        let b1 = bytes.get(i + 1).copied().unwrap_or(0);
-        let b2 = bytes.get(i + 2).copied().unwrap_or(0);
-        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
-        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
-        if i + 1 < bytes.len() {
-            out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
-        }
-        if i + 2 < bytes.len() {
-            out.push(TABLE[(n & 0x3f) as usize] as char);
-        }
-        i += 3;
-    }
-    out
+    URL_SAFE_NO_PAD.encode(&bytes)
 }
 
 fn build_refresh_cookie(state: &AppState, token: &str) -> Cookie<'static> {
