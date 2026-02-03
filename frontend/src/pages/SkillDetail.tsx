@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useParams, Link } from "react-router-dom"
-import axios from "axios"
+import { api } from "@/lib/api"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
@@ -44,7 +44,7 @@ export default function SkillDetail() {
   const fetchSkill = async () => {
     setLoading(true)
     try {
-      const res = await axios.get(`/api/skills/${owner}/${repo}/${name}`)
+      const res = await api.get(`/api/skills/${owner}/${repo}/${name}`)
       if (res.data.code === 200) {
         setData(res.data.data)
       }

@@ -21,6 +21,11 @@ pub struct Model {
     pub url: String,
     #[sea_orm(column_type = "Text", nullable)]
     pub description: Option<String>,
+    pub repo_type: Option<String>,
+    pub status: String,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub blacklist_reason: Option<String>,
+    pub blacklisted_at: Option<DateTime>,
     pub stars: i32,
     pub last_scanned_at: Option<DateTime>,
     pub created_at: DateTime,

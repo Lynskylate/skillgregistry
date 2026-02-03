@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 mod activities;
 mod github;
+#[cfg(test)]
+mod index_flow_tests;
 mod ports;
 mod workflows;
 

@@ -1,6 +1,9 @@
 import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom"
 import SkillList from "./pages/SkillList"
 import SkillDetail from "./pages/SkillDetail"
+import Login from "./pages/Login"
+import Register from "./pages/Register"
+import AuthCallback from "./pages/AuthCallback"
 
 function App() {
   return (
@@ -22,6 +25,9 @@ function App() {
                 <a href="https://agentskills.io" className="transition-colors hover:text-foreground/80 text-foreground/60">
                   Documentation
                 </a>
+                <Link to="/login" className="transition-colors hover:text-foreground/80 text-foreground/60">
+                  Login
+                </Link>
               </nav>
             </div>
             <div className="flex flex-1 items-center justify-between space-x-2 md:justify-end">
@@ -35,6 +41,9 @@ function App() {
         <main>
           <Routes>
             <Route path="/" element={<SkillList />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route path="/auth/callback" element={<AuthCallback />} />
             <Route path="/:owner" element={<SkillList />} />
             <Route path="/:owner/:repo" element={<SkillList />} />
             <Route path="/:owner/:repo/:name" element={<SkillDetail />} />

@@ -37,9 +37,7 @@ services:
     ports:
       - 7233:7233
       - 8233:8233
-    volumes:
-      - temporal-data:/data
-    command: server start-dev --ip 0.0.0.0 --db-filename /data/temporal.db
+    command: server start-dev --ip 0.0.0.0 --db-filename /tmp/temporal.db
 
   skillregistry-backend:
     build:
@@ -120,4 +118,3 @@ services:
 
 volumes:
   rustfs_data:
-  temporal-data:

@@ -1,5 +1,16 @@
+pub use super::auth_identities::Entity as AuthIdentities;
 pub use super::blacklist::Entity as Blacklist;
+pub use super::local_credentials::Entity as LocalCredentials;
+pub use super::org_memberships::Entity as OrgMemberships;
+pub use super::organizations::Entity as Organizations;
+pub use super::plugin_components::Entity as PluginComponents;
+pub use super::plugin_versions::Entity as PluginVersions;
+pub use super::plugins::Entity as Plugins;
+pub use super::refresh_tokens::Entity as RefreshTokens;
 pub use super::skill_registry::Entity as SkillRegistry;
 pub use super::skill_versions::Entity as SkillVersions;
 pub use super::skills::Entity as Skills;
+pub use super::sso_connections::Entity as SsoConnections;
+pub use super::sso_identities::Entity as SsoIdentities;
 pub use super::task_logs::Entity as TaskLogs;
+pub use super::users::Entity as Users;
