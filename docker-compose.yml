@@ -48,7 +48,6 @@ services:
       network: host
       args:
         - RUST_VERSION=1.93.0-bookworm
-        - CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://mirrors.ustc.edu.cn/crates.io-index/
     command: ["/app/api"]
     env_file:
       - .env
@@ -73,7 +72,6 @@ services:
       network: host
       args:
         - RUST_VERSION=1.93.0-bookworm
-        - CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://mirrors.ustc.edu.cn/crates.io-index/
     command: ["/app/worker"]
     env_file:
       - .env
@@ -96,7 +94,6 @@ services:
       network: host
       args:
         - RUST_VERSION=1.93.0-bookworm
-        - CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://mirrors.ustc.edu.cn/crates.io-index/
     command: ["/app/setup"]
     env_file:
       - .env
