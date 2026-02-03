@@ -1,14 +1,45 @@
+#![allow(dead_code)]
+mod activities;
 mod github;
 mod ports;
-mod tasks;
+mod workflows;
 
 use common::config::AppConfig;
 use common::db;
-use common::entities::*;
 use common::s3::S3Service;
-use sea_orm::*;
-use std::time::Duration;
+use sea_orm::DatabaseConnection;
+use tokio::sync::OnceCell;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+// use temporalio_sdk::Worker;
+// use temporalio_sdk_core::{init_worker, WorkerConfigBuilder};
+// use temporalio_client::{Client, ClientOptionsBuilder};
+// use std::str::FromStr;
+use std::sync::Arc;
+// use url::Url;
+
+pub struct AppState {
+    pub db: DatabaseConnection,
+    pub s3: S3Service,
+    pub github: github::GithubClient,
+    pub config: Arc<AppConfig>,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("db", &self.db)
+            .field("config", &self.config)
+            .field("s3", &"S3Service")
+            .field("github", &"GithubClient")
+            .finish()
+    }
+}
+
+pub static APP_STATE: OnceCell<AppState> = OnceCell::const_new();
+
+pub async fn get_app_state() -> &'static AppState {
+    APP_STATE.get().expect("AppState not initialized")
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -46,13 +77,13 @@ async fn main() -> anyhow::Result<()> {
 
     let s3_bucket = std::env::var("S3_BUCKET")
         .or_else(|_| std::env::var("S3_BUCKET_NAME"))
-        .unwrap_or_else(|_| config.s3.bucket);
+        .unwrap_or_else(|_| config.s3.bucket.clone());
 
     let s3_endpoint = std::env::var("S3_ENDPOINT")
         .ok()
         .or_else(|| std::env::var("S3_ENDPOINT_URL").ok())
         .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok())
-        .or(config.s3.endpoint);
+        .or(config.s3.endpoint.clone());
 
     let inferred_region = s3_endpoint.as_deref().and_then(|ep| {
         let ep = ep.trim_matches('"');
@@ -75,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|_| std::env::var("S3_REGION"))
         .ok()
         .or(inferred_region)
-        .unwrap_or_else(|| config.s3.region);
+        .unwrap_or_else(|| config.s3.region.clone());
 
     tracing::info!(
         s3_bucket = %s3_bucket,
@@ -89,77 +120,53 @@ async fn main() -> anyhow::Result<()> {
     let github_token = std::env::var("GITHUB_TOKEN").ok();
     let github = github::GithubClient::new(github_token);
 
-    let keywords_str =
-        std::env::var("SEARCH_KEYWORDS").unwrap_or_else(|_| "topic:agent-skill".to_string());
-    let queries: Vec<String> = keywords_str
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    tracing::info!("Worker started");
-
-    loop {
-        run_task("discovery", &db, || {
-            let q = queries.clone();
-            tasks::discovery::run(&db, &github, q)
-        })
-        .await;
-        run_task("sync", &db, || tasks::sync::run(&db, &s3, &github)).await;
-
-        let interval = config.worker.scan_interval_seconds;
-
-        tracing::info!("Sleeping for {} seconds...", interval);
-        tokio::time::sleep(Duration::from_secs(interval)).await;
-    }
-}
-
-async fn run_task<F, Fut>(name: &str, db: &DatabaseConnection, task_fn: F)
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<()>>,
-{
-    tracing::info!("Running {} task...", name);
-    let start_time = chrono::Utc::now().naive_utc();
-
-    // Create log entry
-    let log_entry = task_logs::ActiveModel {
-        task_name: Set(name.to_string()),
-        status: Set("running".to_string()),
-        started_at: Set(start_time),
-        ..Default::default()
+    // Initialize AppState
+    let state = AppState {
+        db,
+        s3,
+        github,
+        config: Arc::new(config.clone()),
     };
-    let log_res = log_entry.insert(db).await;
-    let log_id = match log_res {
-        Ok(l) => Some(l.id),
-        Err(e) => {
-            tracing::error!("Failed to create task log: {}", e);
-            None
-        }
-    };
+    APP_STATE.set(state).expect("Failed to set AppState");
 
-    let result = task_fn().await;
-    let end_time = chrono::Utc::now().naive_utc();
+    // Temporal Setup - Commented out for now as SDK prototype API requires specific version matching
+    // TODO: Uncomment and fix API calls when running with correct Temporal Server and SDK version
+    /*
+    let server_url = std::env::var("TEMPORAL_SERVER_URL").unwrap_or_else(|_| "http://localhost:7233".to_string());
+    let server_url = Url::from_str(&server_url)?;
 
-    if let Some(id) = log_id {
-        let (status, details) = match &result {
-            Ok(_) => ("success".to_string(), None),
-            Err(e) => ("failed".to_string(), Some(e.to_string())),
-        };
+    let client_options = ClientOptionsBuilder::default()
+        .identity("skill-worker".to_string())
+        .target_url(server_url)
+        .client_name("skill-worker".to_string())
+        .build()?;
 
-        let update = task_logs::ActiveModel {
-            id: Set(id),
-            status: Set(status),
-            details: Set(details),
-            ended_at: Set(Some(end_time)),
-            ..Default::default()
-        };
-        if let Err(e) = update.update(db).await {
-            tracing::error!("Failed to update task log: {}", e);
-        }
-    }
+    let client = Client::new(client_options, "default".to_string())?;
 
-    if let Err(e) = result {
-        tracing::error!("{} failed: {}", name, e);
-    }
+    let worker_config = WorkerConfigBuilder::default()
+        .namespace("default")
+        .task_queue("skill-registry-queue")
+        .build()?;
+
+    let core_worker = init_worker(worker_config, client.clone());
+    let mut worker = Worker::new_from_core(Arc::new(core_worker), "skill-registry-queue");
+
+    // Register Activities
+    worker.register_activity("discovery_activity", activities::discovery::discovery_activity);
+    worker.register_activity("fetch_pending_skills_activity", activities::sync::fetch_pending_skills_activity);
+    worker.register_activity("sync_single_skill_activity", activities::sync::sync_single_skill_activity);
+
+    // Register Workflow
+    worker.register_wf("skill_lifecycle_workflow", workflows::main_workflow::skill_lifecycle_workflow);
+
+    tracing::info!("Starting Temporal Worker on queue 'skill-registry-queue'...");
+    worker.run().await?;
+    */
+
+    tracing::info!("Worker initialized. Temporal integration pending configuration.");
+
+    // Keep process alive for testing purposes if needed
+    // loop { tokio::time::sleep(std::time::Duration::from_secs(60)).await; }
+
+    Ok(())
 }

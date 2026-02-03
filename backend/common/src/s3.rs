@@ -19,6 +19,7 @@ impl S3Service {
             RegionProviderChain::first_try(aws_types::region::Region::new(region))
                 .or_default_provider();
 
+        #[allow(deprecated)]
         let mut config_loader = aws_config::from_env().region(region_provider);
 
         let access_key_id = std::env::var("S3_ACCESS_KEY_ID")

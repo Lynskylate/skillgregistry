@@ -1,7 +1,7 @@
 use config::{Config, Environment, File};
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub database: Option<DatabaseConfig>,
     pub s3: S3Config,
@@ -9,24 +9,24 @@ pub struct AppConfig {
     pub worker: WorkerConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct DatabaseConfig {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct S3Config {
     pub bucket: String,
     pub region: String,
     pub endpoint: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct GithubConfig {
     pub search_keywords: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct WorkerConfig {
     pub scan_interval_seconds: u64,
 }
