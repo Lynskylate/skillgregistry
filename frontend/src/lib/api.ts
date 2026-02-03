@@ -1,4 +1,4 @@
-import axios from "axios"
+import axios, { type InternalAxiosRequestConfig } from "axios"
 import type { ApiResponse } from "@/lib/types"
 import { getAccessToken, setAccessToken } from "@/lib/auth"
 
@@ -8,13 +8,9 @@ type LoginResponse = {
   expires_in: number
 }
 
-type AxiosRequestConfigWithRetry = Parameters<
-  (typeof axios)["interceptors"]["response"]["use"]
->[1] extends (arg: any) => any
-  ? Parameters<Parameters<(typeof axios)["interceptors"]["response"]["use"]>[1]>[0]["config"] & {
-      _retry?: boolean
-    }
-  : any
+type AxiosRequestConfigWithRetry = InternalAxiosRequestConfig & {
+  _retry?: boolean
+}
 
 export const api = axios.create({
   withCredentials: true,
