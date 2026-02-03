@@ -1882,7 +1882,7 @@ fn sha256_hex(input: &str) -> String {
 fn random_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(&bytes)
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 fn build_refresh_cookie(state: &AppState, token: &str) -> Cookie<'static> {
