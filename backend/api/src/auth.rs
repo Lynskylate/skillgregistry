@@ -1767,8 +1767,6 @@ async fn verify_oidc_id_token(
     }
 
     let claims = decoded.claims;
-    let _ = claims.exp;
-    let _ = claims.iat;
     Ok(claims)
 }
 
