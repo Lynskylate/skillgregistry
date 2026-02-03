@@ -9,6 +9,7 @@ pub struct Model {
     pub name: String,
     pub skill_registry_id: i32,
     pub latest_version: Option<String>,
+    pub is_active: i32,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }

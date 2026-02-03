@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { useParams, useSearchParams, Link } from "react-router-dom"
-import axios from "axios"
+import { api } from "@/lib/api"
+import type { ApiResponse } from "@/lib/types"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import {
@@ -22,13 +23,6 @@ interface Skill {
   latest_version: string | null
   description: string | null
   created_at: string
-}
-
-interface ApiResponse<T> {
-  code: number
-  message: string
-  data: T
-  timestamp: number
 }
 
 export default function SkillList() {
@@ -57,9 +51,9 @@ export default function SkillList() {
         // Global list: sort by installs (mocked by created_at for now) or name
       }
 
-      const res = await axios.get<ApiResponse<Skill[]>>("/api/skills", { params })
+      const res = await api.get<ApiResponse<Skill[]>>("/api/skills", { params })
       if (res.data.code === 200) {
-        setSkills(res.data.data)
+        setSkills(res.data.data ?? [])
       }
     } catch (error) {
       console.error("Failed to fetch skills", error)

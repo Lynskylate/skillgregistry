@@ -1,12 +1,23 @@
 use anyhow::Context;
+use argon2::{
+    password_hash::{PasswordHasher, SaltString},
+    Argon2,
+};
 use aws_sdk_s3::config::{Credentials, SharedCredentialsProvider};
+use chrono::Utc;
+use common::entities::prelude::Users;
+use common::entities::{auth_identities, local_credentials, users};
 use common::settings::Settings;
 use migration::{Migrator, MigratorTrait};
-use sea_orm::{Database, DatabaseConnection};
+use rand::rngs::OsRng;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter, Set,
+};
 use std::str::FromStr;
 use std::time::Duration;
 use temporalio_client::{ClientOptions, WorkflowClientTrait, WorkflowOptions};
 use temporalio_sdk_core::Url;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -27,6 +38,8 @@ async fn main() -> anyhow::Result<()> {
     Migrator::up(&db, None).await?;
     tracing::info!("Migrations applied.");
 
+    seed_admin(&db, &settings).await?;
+
     // 3. S3 Setup
     setup_s3(&settings).await?;
 
@@ -34,6 +47,97 @@ async fn main() -> anyhow::Result<()> {
     setup_temporal(&settings).await?;
 
     tracing::info!("Setup completed successfully!");
+    Ok(())
+}
+
+async fn seed_admin(db: &DatabaseConnection, settings: &Settings) -> anyhow::Result<()> {
+    let existing_admin = Users::find()
+        .filter(users::Column::Role.eq(users::UserRole::Admin))
+        .one(db)
+        .await?;
+
+    if existing_admin.is_some() {
+        return Ok(());
+    }
+
+    let username = std::env::var("SKILLREGISTRY_ADMIN_USERNAME")
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| settings.auth.admin_bootstrap.username.trim().to_lowercase());
+
+    let password = std::env::var("SKILLREGISTRY_ADMIN_PASSWORD")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| settings.auth.admin_bootstrap.password.clone())
+        .unwrap_or_else(|| {
+            if settings.debug {
+                "admin".to_string()
+            } else {
+                "".to_string()
+            }
+        });
+
+    if password.is_empty() {
+        return Err(anyhow::anyhow!(
+            "admin bootstrap password is required when debug=false"
+        ));
+    }
+
+    let now = Utc::now().naive_utc();
+    let user_id = Uuid::new_v4();
+
+    let username_taken = Users::find()
+        .filter(users::Column::Username.eq(username.clone()))
+        .one(db)
+        .await?
+        .is_some();
+
+    if username_taken {
+        return Err(anyhow::anyhow!("admin username already exists"));
+    }
+
+    users::ActiveModel {
+        user_id: Set(user_id),
+        status: Set(users::UserStatus::Active),
+        role: Set(users::UserRole::Admin),
+        username: Set(Some(username.clone())),
+        display_name: Set(Some("Admin".to_string())),
+        primary_email: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    }
+    .insert(db)
+    .await?;
+
+    auth_identities::ActiveModel {
+        user_id: Set(user_id),
+        provider: Set(auth_identities::AuthProvider::Local),
+        provider_user_id: Set(username),
+        email: Set(None),
+        email_verified: Set(false),
+        display_name: Set(Some("Admin".to_string())),
+        created_at: Set(now),
+        ..Default::default()
+    }
+    .insert(db)
+    .await?;
+
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| anyhow::anyhow!("failed to hash admin password: {}", e))?
+        .to_string();
+
+    local_credentials::ActiveModel {
+        user_id: Set(user_id),
+        password_hash: Set(password_hash),
+        password_updated_at: Set(now),
+    }
+    .insert(db)
+    .await?;
+
     Ok(())
 }
 
@@ -83,7 +187,7 @@ async fn setup_s3(settings: &Settings) -> anyhow::Result<()> {
         config_builder = config_builder.credentials_provider(SharedCredentialsProvider::new(creds));
     }
 
-    if let Some(ep) = endpoint {
+    if let Some(ep) = endpoint.clone() {
         let ep = ep.trim_matches('"').to_string();
         let ep = if ep.starts_with("http") {
             ep
@@ -94,7 +198,11 @@ async fn setup_s3(settings: &Settings) -> anyhow::Result<()> {
     }
 
     let sdk_config = config_builder.load().await;
-    let client = aws_sdk_s3::Client::new(&sdk_config);
+    let mut s3_conf_builder = aws_sdk_s3::config::Builder::from(&sdk_config);
+    if endpoint.is_some() {
+        s3_conf_builder = s3_conf_builder.force_path_style(true);
+    }
+    let client = aws_sdk_s3::Client::from_conf(s3_conf_builder.build());
 
     // Wait for S3
     let mut attempt = 1;

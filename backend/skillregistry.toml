@@ -1,0 +1,15 @@
+debug = true
+
+[database]
+url = "postgres://postgres:password@localhost:5432/skillregistry"
+
+[s3]
+bucket = "skills"
+region = "us-east-1"
+endpoint = "http://localhost:9000"
+force_path_style = true
+
+[temporal]
+server_url = "http://localhost:7233"
+task_queue = "skill-registry-queue"
+

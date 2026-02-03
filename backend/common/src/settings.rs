@@ -25,6 +25,8 @@ pub struct Settings {
     pub worker: WorkerSettings,
     pub temporal: TemporalSettings,
     #[serde(default)]
+    pub auth: AuthSettings,
+    #[serde(default)]
     pub debug: bool,
 }
 
@@ -69,6 +71,107 @@ pub struct WorkerSettings {
 pub struct TemporalSettings {
     pub server_url: String,
     pub task_queue: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AuthSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    pub frontend_origin: Option<String>,
+    pub cookie_domain: Option<String>,
+    #[serde(default)]
+    pub jwt: JwtSettings,
+    #[serde(default)]
+    pub admin_bootstrap: AdminBootstrapSettings,
+    #[serde(default)]
+    pub oauth: OAuthSettings,
+    #[serde(default)]
+    pub sso: SsoSettings,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct JwtSettings {
+    pub issuer: String,
+    pub audience: String,
+    pub signing_key: Option<String>,
+    #[serde(default = "default_access_ttl_seconds")]
+    pub access_ttl_seconds: i64,
+    #[serde(default = "default_refresh_ttl_seconds")]
+    pub refresh_ttl_seconds: i64,
+}
+
+fn default_access_ttl_seconds() -> i64 {
+    15 * 60
+}
+
+fn default_refresh_ttl_seconds() -> i64 {
+    30 * 24 * 60 * 60
+}
+
+impl Default for JwtSettings {
+    fn default() -> Self {
+        Self {
+            issuer: "skillregistry".to_string(),
+            audience: "skillregistry".to_string(),
+            signing_key: None,
+            access_ttl_seconds: default_access_ttl_seconds(),
+            refresh_ttl_seconds: default_refresh_ttl_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AdminBootstrapSettings {
+    #[serde(default = "default_admin_username")]
+    pub username: String,
+    pub password: Option<String>,
+}
+
+fn default_admin_username() -> String {
+    "admin".to_string()
+}
+
+impl Default for AdminBootstrapSettings {
+    fn default() -> Self {
+        Self {
+            username: default_admin_username(),
+            password: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct OAuthSettings {
+    pub github: Option<OAuthClientSettings>,
+    pub google: Option<OAuthClientSettings>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OAuthClientSettings {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_url: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct SsoSettings {
+    pub base_url: Option<String>,
+}
+
+impl Default for AuthSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            frontend_origin: None,
+            cookie_domain: None,
+            jwt: JwtSettings::default(),
+            admin_bootstrap: AdminBootstrapSettings::default(),
+            oauth: OAuthSettings::default(),
+            sso: SsoSettings::default(),
+        }
+    }
 }
 
 impl Settings {
@@ -159,6 +262,7 @@ impl Settings {
                 server_url: "http://localhost:7233".to_string(),
                 task_queue: "skill-registry-queue".to_string(),
             },
+            auth: AuthSettings::default(),
         }
     }
 }

@@ -162,6 +162,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "examples-shared",
  "futures",
  "serde",
  "serde_json",
@@ -499,6 +500,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "examples-shared"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "temporalio-client",
+ "temporalio-common",
+ "temporalio-sdk-core",
+ "tokio",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -770,6 +784,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "examples-shared",
  "serde",
  "serde_json",
  "temporalio-client",
@@ -1092,6 +1107,25 @@ name = "litemap"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
+
+[[package]]
+name = "localactivity"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "examples-shared",
+ "serde",
+ "serde_json",
+ "temporalio-client",
+ "temporalio-common",
+ "temporalio-sdk",
+ "temporalio-sdk-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "lock_api"
@@ -1928,6 +1962,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "examples-shared",
  "serde",
  "serde_json",
  "temporalio-client",

@@ -1,6 +1,17 @@
+pub mod auth_identities;
 pub mod blacklist;
+pub mod local_credentials;
+pub mod org_memberships;
+pub mod organizations;
+pub mod plugin_components;
+pub mod plugin_versions;
+pub mod plugins;
 pub mod prelude;
+pub mod refresh_tokens;
 pub mod skill_registry;
 pub mod skill_versions;
 pub mod skills;
+pub mod sso_connections;
+pub mod sso_identities;
 pub mod task_logs;
+pub mod users;
