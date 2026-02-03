@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: skillregistry
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: rustfs
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - rustfs_data:/data
+    # Assuming default credentials are rustfsadmin/rustfsadmin based on docs
+    # If environment variables are needed to change them, they would be here.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  temporal:
+    image: temporalio/temporal:latest
+    container_name: temporal
+    ports:
+      - 7233:7233
+      - 8233:8233
+    volumes:
+      - temporal-data:/data
+    command: server start-dev --ip 0.0.0.0 --db-filename /data/temporal.db
+
+  skillregistry-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      network: host
+      args:
+        - RUST_VERSION=1.93.0-bookworm
+    command: ["/app/api"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://postgres:password@postgres:5432/skillregistry
+      - TEMPORAL_SERVER_URL=http://temporal:7233
+      - RUST_LOG=info
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
+      temporal:
+        condition: service_started
+
+  skillregistry-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      network: host
+      args:
+        - RUST_VERSION=1.93.0-bookworm
+    command: ["/app/worker"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://postgres:password@postgres:5432/skillregistry
+      - TEMPORAL_SERVER_URL=http://temporal:7233
+      - RUST_LOG=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
+      temporal:
+        condition: service_started
+
+  skillregistry-setup:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      network: host
+      args:
+        - RUST_VERSION=1.93.0-bookworm
+    command: ["/app/setup"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://postgres:password@postgres:5432/skillregistry
+      - TEMPORAL_SERVER_URL=http://temporal:7233
+      - RUST_LOG=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
+      temporal:
+        condition: service_started
+
+volumes:
+  rustfs_data:
+  temporal-data:

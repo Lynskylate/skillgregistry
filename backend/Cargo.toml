@@ -3,5 +3,7 @@ members = [
     "api",
     "worker",
     "common",
+    "migration",
+    "setup", "migration",
 ]
 resolver = "2"

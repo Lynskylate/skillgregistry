@@ -1,0 +1,23 @@
+# Rust build artifacts
+target/
+
+# Git
+.git/
+.gitignore
+
+# Environment variables (secrets)
+.env
+.env.*
+
+# Editor/IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+.dockerignore

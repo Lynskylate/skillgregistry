@@ -414,8 +414,35 @@ metadata:
             },
         ]]);
 
-        let db = db.append_query_results(vec![Vec::<skills::Model>::new()]); // Existing skill check (None)
-        let db = db.append_query_results(vec![Vec::<skills::Model>::new()]); // Extra buffer just in case
+        let db = db.append_query_results(vec![
+            // Existing skill check (None)
+            Vec::<skills::Model>::new(),
+            // Return inserted skill
+            vec![skills::Model {
+                id: 10,
+                skill_registry_id: 1,
+                name: "test-skill".to_string(),
+                latest_version: Some("1.0.0".to_string()),
+                created_at: chrono::Utc::now().naive_utc(),
+                updated_at: chrono::Utc::now().naive_utc(),
+            }],
+        ]);
+
+        let db = db.append_query_results(vec![
+            // Return inserted version
+            vec![skill_versions::Model {
+                id: 100,
+                skill_id: 10,
+                version: "1.0.0".to_string(),
+                description: Some("test description".to_string()),
+                readme_content: Some("# Test Skill Body".to_string()),
+                s3_key: Some("skills/test-skill/1.0.0.zip".to_string()),
+                oss_url: Some("https://oss.com/test.zip".to_string()),
+                file_hash: Some("dummy_hash".to_string()),
+                metadata: Some(serde_json::json!({"version": "1.0.0"})),
+                created_at: chrono::Utc::now().naive_utc(),
+            }],
+        ]);
 
         let db = db
             .append_exec_results(vec![
