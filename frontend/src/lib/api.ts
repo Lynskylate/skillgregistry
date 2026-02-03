@@ -1,4 +1,4 @@
-import axios, { type InternalAxiosRequestConfig } from "axios"
+import axios, { type AxiosError } from "axios"
 import type { ApiResponse } from "@/lib/types"
 import { getAccessToken, setAccessToken } from "@/lib/auth"
 
@@ -6,10 +6,6 @@ type LoginResponse = {
   access_token: string
   token_type: string
   expires_in: number
-}
-
-type AxiosRequestConfigWithRetry = InternalAxiosRequestConfig & {
-  _retry?: boolean
 }
 
 export const api = axios.create({
@@ -27,8 +23,8 @@ api.interceptors.request.use((config) => {
 
 api.interceptors.response.use(
   (res) => res,
-  async (error) => {
-    const original = error?.config as AxiosRequestConfigWithRetry | undefined
+  async (error: AxiosError) => {
+    const original = error.config
     if (!original) return Promise.reject(error)
 
     if (error?.response?.status === 401 && !original._retry) {
@@ -50,4 +46,3 @@ api.interceptors.response.use(
     return Promise.reject(error)
   }
 )
-
