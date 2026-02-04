@@ -135,12 +135,10 @@ jobs:
         PY
 
     - name: Upload coverage reports to Codecov
-      if: ${{ secrets.CODECOV_TOKEN }}
       uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: backend/codecov.json
-        fail_ci_if_error: true
 
     - name: Upload coverage artifacts
       uses: actions/upload-artifact@v4
