@@ -1,5 +1,8 @@
 # Agent Skill Registry
 
+[![CI](https://github.com/Lynskylate/skillgregistry/actions/workflows/ci.yml/badge.svg)](https://github.com/Lynskylate/skillgregistry/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/github/lynskylate/skillgregistry/graph/badge.svg?token=XHBRCLST8W)](https://codecov.io/github/lynskylate/skillgregistry)
+
 A system to index, discover, and display skill projects hosted on GitHub/GitLab, following the [Agent Skills specification](https://agentskills.io/specification).
 
 ## Architecture
