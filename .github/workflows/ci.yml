@@ -139,7 +139,6 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: backend/codecov.json
-      continue-on-error: true
 
     - name: Upload coverage artifacts
       uses: actions/upload-artifact@v4
