@@ -1,5 +1,8 @@
+#[cfg(test)]
 use crate::test_harness::TestEnv;
+#[cfg(test)]
 use anyhow::Result;
+#[cfg(test)]
 use serde_json::json;
 
 /// Test Scenario 1: Complete discovery and sync workflow
@@ -69,7 +72,10 @@ async fn test_api_endpoints() -> Result<()> {
     // Test search with query parameters
     let search = env
         .client
-        .get(&format!("{}/api/skills?q=test&page=1&per_page=10", env.api_url))
+        .get(&format!(
+            "{}/api/skills?q=test&page=1&per_page=10",
+            env.api_url
+        ))
         .send()
         .await?;
     assert!(search.status().is_success());
@@ -115,11 +121,9 @@ async fn test_error_handling() -> Result<()> {
         .get(&format!("{}/api/skills/999999", env.api_url))
         .send()
         .await?;
-    
+
     // Should return 404 or appropriate error
-    assert!(
-        response.status().is_client_error() || response.status().is_success()
-    );
+    assert!(response.status().is_client_error() || response.status().is_success());
 
     // Test invalid search parameters
     let search = env
@@ -127,7 +131,7 @@ async fn test_error_handling() -> Result<()> {
         .get(&format!("{}/api/skills?page=-1&per_page=0", env.api_url))
         .send()
         .await?;
-    
+
     // Should handle gracefully
     assert!(search.status().is_success() || search.status().is_client_error());
 
