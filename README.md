@@ -91,4 +91,6 @@ To run E2E tests locally:
 ./scripts/run-e2e-tests.sh
 ```
 
-For detailed information about E2E testing, see [E2E Testing Guide](docs/E2E_TESTING.md).
+For detailed information about E2E testing:
+- [E2E Testing Guide](docs/E2E_TESTING.md) - How to run and write E2E tests
+- [E2E Test Design](docs/E2E_TEST_DESIGN.md) - Architecture and design decisions
