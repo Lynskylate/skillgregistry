@@ -54,7 +54,19 @@ jobs:
       - name: Start Temporal Server
         run: |
           temporal server start-dev --headless &
-          sleep 10
+          
+          # Wait for Temporal to be ready
+          echo "Waiting for Temporal server to start..."
+          for i in {1..30}; do
+            if temporal operator cluster health 2>/dev/null; then
+              echo "Temporal server is ready"
+              break
+            fi
+            echo "Waiting for Temporal server... ($i/30)"
+            sleep 2
+          done
+          
+          # Final health check
           temporal operator cluster health
 
       - name: Setup MinIO (S3-compatible storage)
@@ -66,13 +78,17 @@ jobs:
             -e "MINIO_ROOT_USER=minioadmin" \
             -e "MINIO_ROOT_PASSWORD=minioadmin" \
             minio/minio server /data --console-address ":9001"
-          
+
           # Wait for MinIO to be ready
           sleep 5
-          
-          # Create test bucket
-          docker exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
-          docker exec minio mc mb local/skills || true
+
+          # Install MinIO client
+          wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O mc
+          chmod +x mc
+
+          # Create test bucket using mc client
+          ./mc alias set myminio http://localhost:9000 minioadmin minioadmin
+          ./mc mb myminio/skills || true
 
       - name: Run database migrations
         working-directory: ./backend
@@ -100,7 +116,17 @@ jobs:
           cargo run --bin api &
           API_PID=$!
           echo $API_PID > /tmp/api.pid
-          sleep 5
+          
+          # Wait for API to be ready
+          echo "Waiting for API server to start..."
+          for i in {1..30}; do
+            if curl -f http://localhost:3000/health 2>/dev/null; then
+              echo "API server is ready"
+              break
+            fi
+            echo "Waiting for API server... ($i/30)"
+            sleep 1
+          done
 
       - name: Start Worker
         working-directory: ./backend
