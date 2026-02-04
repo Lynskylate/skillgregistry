@@ -215,16 +215,8 @@ impl Settings {
                 .only(&["S3_ENDPOINT"])
                 .map(|_| "s3.endpoint".into()),
         );
-        figment = figment.merge(
-            Env::raw()
-                .only(&["S3_BUCKET"])
-                .map(|_| "s3.bucket".into()),
-        );
-        figment = figment.merge(
-            Env::raw()
-                .only(&["S3_REGION"])
-                .map(|_| "s3.region".into()),
-        );
+        figment = figment.merge(Env::raw().only(&["S3_BUCKET"]).map(|_| "s3.bucket".into()));
+        figment = figment.merge(Env::raw().only(&["S3_REGION"]).map(|_| "s3.region".into()));
 
         // Support standard AWS Env Vars
         figment = figment.merge(
