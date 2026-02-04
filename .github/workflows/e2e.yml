@@ -1,0 +1,151 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: skillregistry_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache Cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Setup Temporal
+        uses: temporalio/setup-temporal@v0
+        with:
+          version: latest
+
+      - name: Start Temporal Server
+        run: |
+          temporal server start-dev --headless &
+          sleep 10
+          temporal operator cluster health
+
+      - name: Setup MinIO (S3-compatible storage)
+        run: |
+          docker run -d \
+            --name minio \
+            -p 9000:9000 \
+            -p 9001:9001 \
+            -e "MINIO_ROOT_USER=minioadmin" \
+            -e "MINIO_ROOT_PASSWORD=minioadmin" \
+            minio/minio server /data --console-address ":9001"
+          
+          # Wait for MinIO to be ready
+          sleep 5
+          
+          # Create test bucket
+          docker exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
+          docker exec minio mc mb local/skills || true
+
+      - name: Run database migrations
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+        run: |
+          cargo run --bin setup
+
+      - name: Build backend
+        working-directory: ./backend
+        run: cargo build --verbose
+
+      - name: Start API server
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+          S3_ENDPOINT: http://localhost:9000
+          S3_BUCKET: skills
+          S3_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          TEMPORAL_SERVER_URL: http://localhost:7233
+          RUST_LOG: info
+        run: |
+          cargo run --bin api &
+          API_PID=$!
+          echo $API_PID > /tmp/api.pid
+          sleep 5
+
+      - name: Start Worker
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+          S3_ENDPOINT: http://localhost:9000
+          S3_BUCKET: skills
+          S3_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          TEMPORAL_SERVER_URL: http://localhost:7233
+          RUST_LOG: info
+        run: |
+          cargo run --bin worker &
+          WORKER_PID=$!
+          echo $WORKER_PID > /tmp/worker.pid
+          sleep 5
+
+      - name: Run E2E tests
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+          API_URL: http://localhost:3000
+          TEMPORAL_SERVER_URL: http://localhost:7233
+          S3_ENDPOINT: http://localhost:9000
+          RUST_LOG: debug
+        run: |
+          cargo test --test integration_test -- --ignored --nocapture
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f /tmp/api.pid ]; then
+            kill $(cat /tmp/api.pid) || true
+          fi
+          if [ -f /tmp/worker.pid ]; then
+            kill $(cat /tmp/worker.pid) || true
+          fi
+          docker stop minio || true
+          docker rm minio || true
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-logs
+          path: |
+            backend/target/debug/e2e-*.log
