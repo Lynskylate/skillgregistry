@@ -47,6 +47,110 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
 
+  backend_coverage:
+    name: Backend Coverage
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: llvm-tools-preview
+
+    - name: Install protobuf compiler
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+    - name: Cache Cargo dependencies
+      uses: swatinem/rust-cache@v2
+      with:
+        workspaces: backend
+
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+
+    - name: Generate coverage (Codecov format)
+      run: cargo llvm-cov --workspace --all-features --codecov --output-path codecov.json
+
+    - name: Generate coverage summary (LLVM JSON)
+      run: cargo llvm-cov report --summary-only --json --output-path llvm-cov.json
+
+    - name: Generate HTML coverage report
+      run: cargo llvm-cov report --html --output-dir coverage-html
+
+    - name: Write coverage to job summary
+      run: |
+        python3 - << 'PY'
+        import os
+        import json
+        from pathlib import Path
+
+        report_path = Path("llvm-cov.json")
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+
+        totals = None
+        if isinstance(data, dict):
+          if "data" in data and isinstance(data["data"], list) and data["data"]:
+            totals = data["data"][0].get("totals")
+          if totals is None:
+            totals = data.get("totals")
+
+        def fmt_percent(obj):
+          if not isinstance(obj, dict):
+            return None
+          percent = obj.get("percent")
+          if isinstance(percent, (int, float)):
+            return f"{percent:.2f}%"
+          covered = obj.get("covered")
+          count = obj.get("count")
+          if isinstance(covered, (int, float)) and isinstance(count, (int, float)) and count:
+            return f"{covered * 100.0 / count:.2f}%"
+          return None
+
+        lines = fmt_percent(totals.get("lines") if isinstance(totals, dict) else None) if totals else None
+        functions = fmt_percent(totals.get("functions") if isinstance(totals, dict) else None) if totals else None
+        regions = fmt_percent(totals.get("regions") if isinstance(totals, dict) else None) if totals else None
+
+        summary_lines = [
+          "## Backend Coverage",
+          "",
+          f"- Lines: {lines or 'n/a'}",
+          f"- Functions: {functions or 'n/a'}",
+          f"- Regions: {regions or 'n/a'}",
+          "",
+          "Artifact: backend-coverage",
+        ]
+
+        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if step_summary:
+          with open(step_summary, "a", encoding="utf-8") as f:
+            f.write("\n".join(summary_lines) + "\n")
+        else:
+          print("\n".join(summary_lines))
+        PY
+
+    - name: Upload coverage reports to Codecov
+      if: ${{ secrets.CODECOV_TOKEN }}
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: backend/codecov.json
+        fail_ci_if_error: true
+
+    - name: Upload coverage artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: backend-coverage
+        path: |
+          backend/codecov.json
+          backend/llvm-cov.json
+          backend/coverage-html
+
   frontend:
     name: Frontend Build
     runs-on: ubuntu-latest
