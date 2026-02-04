@@ -11,3 +11,7 @@ search_keywords = "topic:agent-skill"
 
 [worker]
 scan_interval_seconds = 3600
+
+[temporal]
+server_url = "http://localhost:7233"
+task_queue = "skill-registry-queue"
