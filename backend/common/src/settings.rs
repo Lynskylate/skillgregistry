@@ -202,6 +202,13 @@ impl Settings {
         // Prefixed with SKILLREGISTRY_ (e.g. SKILLREGISTRY_PORT=8080, SKILLREGISTRY_S3__BUCKET=foo)
         figment = figment.merge(Env::prefixed("SKILLREGISTRY_"));
 
+        // Support standard DATABASE_URL
+        figment = figment.merge(
+            Env::raw()
+                .only(&["DATABASE_URL"])
+                .map(|_| "database.url".into()),
+        );
+
         // Support standard AWS Env Vars
         figment = figment.merge(
             Env::raw()
