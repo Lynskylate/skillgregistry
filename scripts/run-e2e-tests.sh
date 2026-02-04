@@ -116,7 +116,7 @@ print_info "Worker is running (PID: $WORKER_PID)"
 # Run E2E tests
 print_info "Running E2E tests..."
 echo "========================================="
-cargo test --test integration_test -- --ignored --nocapture
+cargo test -p e2e-tests --test e2e -- --ignored --nocapture
 
 # Test results
 if [ $? -eq 0 ]; then

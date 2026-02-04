@@ -23,14 +23,14 @@ The E2E test infrastructure consists of:
    - API Server: REST API service
    - Worker: Background task processor
 
-2. **Test Scenarios** (`backend/tests/e2e/test_scenarios.rs`):
+2. **Test Scenarios** (`backend/e2e-tests/src/test_scenarios.rs`):
    - Complete discovery and sync workflow
    - API endpoints integration
    - Temporal workflow execution
    - Error handling and edge cases
    - Data persistence and versioning
 
-3. **Test Harness** (`backend/tests/e2e/test_harness.rs`):
+3. **Test Harness** (`backend/e2e-tests/src/test_harness.rs`):
    - Service health checks
    - Environment configuration
    - Utility functions
@@ -97,7 +97,7 @@ cargo run --bin worker
 5. Run tests:
 ```bash
 # Terminal 3: E2E Tests
-cargo test --test integration_test -- --ignored --nocapture
+cargo test -p e2e-tests --test e2e -- --ignored --nocapture
 ```
 
 6. Cleanup:
@@ -131,7 +131,7 @@ The E2E workflow runs automatically on:
 
 To add a new E2E test scenario:
 
-1. Add a new test function in `backend/tests/e2e/test_scenarios.rs`:
+1. Add a new test function in `backend/e2e-tests/src/test_scenarios.rs`:
 
 ```rust
 #[tokio::test]
