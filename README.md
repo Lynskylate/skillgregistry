@@ -72,3 +72,28 @@ Visit `http://localhost:5173` to browse the registry.
 - **Processing**: Downloads, parses `SKILL.md`, and validates structure.
 - **Registry**: API to search and view skills.
 - **Versioning**: Tracks versions of skills.
+
+## Testing
+
+### Unit and Integration Tests
+
+Run the test suite:
+
+```bash
+cd backend
+cargo test
+```
+
+### End-to-End Tests
+
+The project includes comprehensive E2E tests that validate the complete system workflow including Temporal workflows, API endpoints, and database operations.
+
+To run E2E tests locally:
+
+```bash
+./scripts/run-e2e-tests.sh
+```
+
+For detailed information about E2E testing:
+- [E2E Testing Guide](docs/E2E_TESTING.md) - How to run and write E2E tests
+- [E2E Test Design](docs/E2E_TEST_DESIGN.md) - Architecture and design decisions

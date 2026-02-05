@@ -202,6 +202,22 @@ impl Settings {
         // Prefixed with SKILLREGISTRY_ (e.g. SKILLREGISTRY_PORT=8080, SKILLREGISTRY_S3__BUCKET=foo)
         figment = figment.merge(Env::prefixed("SKILLREGISTRY_"));
 
+        // Support standard DATABASE_URL
+        figment = figment.merge(
+            Env::raw()
+                .only(&["DATABASE_URL"])
+                .map(|_| "database.url".into()),
+        );
+
+        // Support standard S3 Env Vars
+        figment = figment.merge(
+            Env::raw()
+                .only(&["S3_ENDPOINT"])
+                .map(|_| "s3.endpoint".into()),
+        );
+        figment = figment.merge(Env::raw().only(&["S3_BUCKET"]).map(|_| "s3.bucket".into()));
+        figment = figment.merge(Env::raw().only(&["S3_REGION"]).map(|_| "s3.region".into()));
+
         // Support standard AWS Env Vars
         figment = figment.merge(
             Env::raw()
@@ -218,6 +234,13 @@ impl Settings {
             Env::raw()
                 .only(&["S3_FORCE_PATH_STYLE"])
                 .map(|_| "s3.force_path_style".into()),
+        );
+
+        // Support standard Temporal Env Vars
+        figment = figment.merge(
+            Env::raw()
+                .only(&["TEMPORAL_SERVER_URL"])
+                .map(|_| "temporal.server_url".into()),
         );
 
         // Support standard GITHUB_TOKEN
