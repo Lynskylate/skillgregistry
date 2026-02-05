@@ -5,13 +5,13 @@ use super::utils::{
 };
 use crate::ports::Storage;
 use anyhow::Result;
-use common::entities::{prelude::*, *};
+use common::entities::{plugin_components, plugin_versions, plugins, prelude::*, skill_registry};
 use sea_orm::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub async fn sync_marketplace_plugins(
-    db: &DatabaseConnection,
+    db: &sea_orm::DatabaseConnection,
     s3: &impl Storage,
     repo: &skill_registry::Model,
     all_files: &BTreeMap<String, Vec<u8>>,
@@ -100,12 +100,12 @@ pub async fn sync_marketplace_plugins(
             }
         }
 
-        let version_str = json_string(manifest.get("version"))
-            .or_else(|| json_string(entry.get("version")))
-            .unwrap_or_else(|| format!("0.0.{}", chrono::Utc::now().timestamp()));
-
         let plugin_files = subtree_file_map(all_files, &plugin_root);
         let hash_string = compute_hash(&plugin_files);
+        let derived_patch = u32::from_str_radix(&hash_string[..8], 16).unwrap_or(0);
+        let version_str = json_string(manifest.get("version"))
+            .or_else(|| json_string(entry.get("version")))
+            .unwrap_or_else(|| format!("0.0.{}", derived_patch));
 
         let existing_version = PluginVersions::find()
             .filter(plugin_versions::Column::PluginId.eq(plugin.id))
@@ -135,6 +135,7 @@ pub async fn sync_marketplace_plugins(
             "strict": strict,
         });
 
+        let txn = db.begin().await?;
         let plugin_version_id = if let Some(v) = existing_version {
             let mut active: plugin_versions::ActiveModel = v.into();
             active.description = Set(description.clone());
@@ -143,7 +144,7 @@ pub async fn sync_marketplace_plugins(
             active.oss_url = Set(Some(oss_url));
             active.file_hash = Set(Some(hash_string));
             active.metadata = Set(Some(metadata));
-            active.update(db).await?.id
+            active.update(&txn).await?.id
         } else {
             let new_version = plugin_versions::ActiveModel {
                 plugin_id: Set(plugin.id),
@@ -157,7 +158,7 @@ pub async fn sync_marketplace_plugins(
                 created_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()
             };
-            new_version.insert(db).await?.id
+            new_version.insert(&txn).await?.id
         };
 
         let components =
@@ -165,7 +166,7 @@ pub async fn sync_marketplace_plugins(
 
         let _ = PluginComponents::delete_many()
             .filter(plugin_components::Column::PluginVersionId.eq(plugin_version_id))
-            .exec(db)
+            .exec(&txn)
             .await?;
 
         if !components.is_empty() {
@@ -184,14 +185,15 @@ pub async fn sync_marketplace_plugins(
                 })
                 .collect();
             let _ = PluginComponents::insert_many(active_models)
-                .exec(db)
+                .exec(&txn)
                 .await?;
         }
 
         let mut plugin_active: plugins::ActiveModel = plugin.into();
         plugin_active.latest_version = Set(Some(version_str));
         plugin_active.updated_at = Set(chrono::Utc::now().naive_utc());
-        let _ = plugin_active.update(db).await?;
+        let _ = plugin_active.update(&txn).await?;
+        txn.commit().await?;
 
         changed = true;
     }

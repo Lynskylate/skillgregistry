@@ -4,7 +4,7 @@ pub mod sync_scheduler_workflow;
 
 use anyhow::{anyhow, Result};
 use temporalio_common::protos::coresdk::activity_result::activity_resolution::Status;
-use temporalio_sdk::{ActivityOptions, WfContext};
+use temporalio_sdk::{ActivityOptions, LocalActivityOptions, WfContext};
 
 pub fn create_json_payload(
     data: &impl serde::Serialize,
@@ -41,6 +41,31 @@ pub async fn execute_activity<T: serde::de::DeserializeOwned>(
             Status::Failed(f) => Err(anyhow!("Activity failed: {:?}", f)),
             Status::Cancelled(_) => Err(anyhow!("Activity cancelled")),
             Status::Backoff(_) => Err(anyhow!("Activity backoff?")), // Should not happen in result
+        }
+    } else {
+        Err(anyhow!("Activity returned no status"))
+    }
+}
+
+pub async fn execute_local_activity<T: serde::de::DeserializeOwned>(
+    ctx: &WfContext,
+    opts: LocalActivityOptions,
+) -> Result<T> {
+    let res = ctx.local_activity(opts).await;
+
+    if let Some(status) = res.status {
+        match status {
+            Status::Completed(success) => {
+                if let Some(payload) = success.result {
+                    let result: T = serde_json::from_slice(&payload.data)
+                        .map_err(|e| anyhow!("Failed to deserialize result: {}", e))?;
+                    return Ok(result);
+                }
+                Err(anyhow!("Activity completed but returned no result"))
+            }
+            Status::Failed(f) => Err(anyhow!("Activity failed: {:?}", f)),
+            Status::Cancelled(_) => Err(anyhow!("Activity cancelled")),
+            Status::Backoff(_) => Err(anyhow!("Activity backoff?")),
         }
     } else {
         Err(anyhow!("Activity returned no status"))

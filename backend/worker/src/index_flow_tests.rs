@@ -1,9 +1,11 @@
 use crate::activities::discovery::DiscoveryService;
-use crate::activities::sync::SyncService;
 use crate::github::{GithubOwner, GithubRepo};
 use crate::ports::{MockGithubApi, MockStorage};
+use crate::sync::SyncService;
 use anyhow::Result;
+use common::build_all;
 use common::entities::{prelude::*, skill_registry, *};
+use common::settings::Settings;
 use migration::MigratorTrait;
 use sea_orm::{ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter};
 use std::io::Write;
@@ -23,15 +25,48 @@ fn create_zip(files: Vec<(&str, &[u8])>) -> Vec<u8> {
     buf
 }
 
-async fn setup_db() -> Result<DatabaseConnection> {
+async fn setup_db() -> Result<(DatabaseConnection, common::Services)> {
     let db = Database::connect("sqlite::memory:").await?;
     migration::Migrator::up(&db, None).await?;
-    Ok(db)
+
+    let settings = Settings::new().unwrap_or_else(|_| Settings {
+        port: 3000,
+        database: common::settings::DatabaseSettings {
+            url: "sqlite::memory:".to_string(),
+        },
+        s3: common::settings::S3Settings {
+            bucket: "test".to_string(),
+            region: "us-east-1".to_string(),
+            endpoint: None,
+            access_key_id: None,
+            secret_access_key: None,
+            force_path_style: false,
+        },
+        github: common::settings::GithubSettings {
+            search_keywords: "topic:agent-skill".to_string(),
+            token: None,
+            api_url: "https://api.github.com".to_string(),
+        },
+        worker: common::settings::WorkerSettings {
+            scan_interval_seconds: 3600,
+        },
+        temporal: common::settings::TemporalSettings {
+            server_url: "http://localhost:7233".to_string(),
+            task_queue: "test".to_string(),
+        },
+        auth: common::settings::AuthSettings::default(),
+        debug: true,
+    });
+
+    let db_arc = std::sync::Arc::new(db.clone());
+    let (_repos, services) = build_all(db_arc, &settings).await;
+
+    Ok((db, services))
 }
 
 #[tokio::test]
 async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
-    let db = setup_db().await?;
+    let (db, services) = setup_db().await?;
 
     let mut github = MockGithubApi::new();
     github.expect_search_repositories().returning(|q| {
@@ -77,7 +112,7 @@ async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
         .await?
         .unwrap();
 
-    let pending = SyncService::fetch_pending(&db).await?;
+    let pending = SyncService::fetch_pending(services.registry_service.as_ref()).await?;
     assert_eq!(pending, vec![registry.id]);
 
     let res = SyncService::process_one(&db, &s3, &github, registry.id).await?;
@@ -109,7 +144,7 @@ async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
 
 #[tokio::test]
 async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
-    let db = setup_db().await?;
+    let (db, services) = setup_db().await?;
 
     let mut github = MockGithubApi::new();
     github.expect_search_repositories().returning(|q| {
@@ -183,7 +218,7 @@ async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
         .await?
         .unwrap();
 
-    let pending = SyncService::fetch_pending(&db).await?;
+    let pending = SyncService::fetch_pending(services.registry_service.as_ref()).await?;
     assert_eq!(pending, vec![registry.id]);
 
     let res = SyncService::process_one(&db, &s3, &github, registry.id).await?;

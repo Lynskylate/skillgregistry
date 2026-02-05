@@ -2,30 +2,27 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 
-#[derive(Deserialize, Debug)]
-pub struct SkillFrontmatter {
-    pub name: String,
-    pub description: String,
-    #[allow(dead_code)]
-    pub license: Option<String>,
-    #[allow(dead_code)]
-    pub compatibility: Option<String>,
-    #[serde(rename = "allowed-tools")]
-    #[allow(dead_code)]
-    pub allowed_tools: Option<String>,
-    pub metadata: Option<serde_json::Value>,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SyncResult {
-    pub status: String, // "Updated", "Unchanged", "Error", "SkippedBlacklisted", "Blacklisted"
+    pub status: String,
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ParsedMarkdown {
-    pub metadata: Option<Value>,
-    pub body: String,
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RepoSnapshotRef {
+    pub registry_id: i32,
+    pub owner: String,
+    pub name: String,
+    pub url: String,
+    pub zip_hash: String,
+    pub snapshot_s3_key: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "kind")]
+pub enum SnapshotResult {
+    Skipped { status: String },
+    Snapshot(RepoSnapshotRef),
 }
 
 #[derive(Debug, Clone)]

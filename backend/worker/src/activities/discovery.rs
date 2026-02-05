@@ -4,6 +4,7 @@ use common::entities::{prelude::*, *};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use temporalio_sdk::ActivityError;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DiscoveryResult {
@@ -121,15 +122,12 @@ impl DiscoveryService {
     }
 }
 
-use temporalio_sdk::{ActContext, ActivityError};
-
-// Activity Wrapper
-pub async fn discovery_activity(
-    _ctx: ActContext,
+// Activity wrapper that takes WorkerContext
+pub async fn discovery_activity_with_ctx(
+    ctx: &crate::WorkerContext,
     queries: Vec<String>,
 ) -> Result<DiscoveryResult, ActivityError> {
-    let state = crate::get_app_state().await;
-    DiscoveryService::run(&state.db, &state.github, queries)
+    DiscoveryService::run(ctx.db.as_ref(), ctx.github.as_ref(), queries)
         .await
         .map_err(ActivityError::from)
 }

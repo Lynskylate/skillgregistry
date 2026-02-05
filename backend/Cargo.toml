@@ -4,6 +4,6 @@ members = [
     "worker",
     "common",
     "migration",
-    "setup", "migration",
+    "setup",
 ]
 resolver = "2"

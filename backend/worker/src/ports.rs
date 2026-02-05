@@ -33,11 +33,16 @@ impl GithubApi for GithubClient {
 #[async_trait]
 pub trait Storage: Send + Sync {
     async fn upload(&self, key: &str, body: Vec<u8>) -> Result<String>;
+    async fn download(&self, key: &str) -> Result<Vec<u8>>;
 }
 
 #[async_trait]
 impl Storage for S3Service {
     async fn upload(&self, key: &str, body: Vec<u8>) -> Result<String> {
         self.upload_file(key, body).await
+    }
+
+    async fn download(&self, key: &str) -> Result<Vec<u8>> {
+        self.download_file(key).await
     }
 }

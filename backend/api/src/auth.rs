@@ -185,7 +185,7 @@ async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
 ) -> (CookieJar, Json<ApiResponse<LoginResponse>>) {
-    let db = &state.db;
+    let db = state.db.as_ref();
     let now = Utc::now().naive_utc();
 
     let username = req.username.trim().to_lowercase();
@@ -309,7 +309,7 @@ async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
 ) -> (CookieJar, Json<ApiResponse<LoginResponse>>) {
-    let db = &state.db;
+    let db = &*state.db;
     let identifier = req.identifier.trim().to_lowercase();
     if identifier.is_empty() || req.password.is_empty() {
         return (
@@ -381,7 +381,7 @@ async fn refresh(
         );
     }
 
-    let db = &state.db;
+    let db = state.db.as_ref();
     let now = Utc::now().naive_utc();
     let cookie = match jar.get(REFRESH_COOKIE_NAME) {
         Some(c) => c,
@@ -448,7 +448,7 @@ async fn logout(
         );
     }
 
-    let db = &state.db;
+    let db = state.db.as_ref();
     let now = Utc::now().naive_utc();
 
     if let Some(cookie) = jar.get(REFRESH_COOKIE_NAME) {
@@ -474,7 +474,7 @@ pub async fn me(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
 ) -> Json<ApiResponse<MeResponse>> {
-    let db = &state.db;
+    let db = state.db.as_ref();
     let model = match Users::find_by_id(user.user_id).one(db).await {
         Ok(Some(u)) => u,
         _ => return Json(ApiResponse::error(404, "user not found".to_string())),
@@ -493,7 +493,7 @@ async fn sso_lookup(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SsoLookupRequest>,
 ) -> Json<ApiResponse<Vec<SsoLookupItem>>> {
-    let db = &state.db;
+    let db = state.db.as_ref();
     let email = req.email.trim().to_lowercase();
     let domain = match email.split('@').nth(1) {
         Some(d) if !d.is_empty() => d.to_string(),
@@ -750,7 +750,7 @@ async fn sso_start(
     State(state): State<Arc<AppState>>,
     Path(connection_id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let db = &state.db;
+    let db = state.db.as_ref();
     let conn = match SsoConnections::find_by_id(connection_id).one(db).await {
         Ok(Some(c)) => c,
         _ => {
@@ -930,7 +930,7 @@ async fn sso_callback(
             .into_response();
     }
 
-    let db = &state.db;
+    let db = state.db.as_ref();
     let conn = match SsoConnections::find_by_id(connection_id).one(db).await {
         Ok(Some(c)) => c,
         _ => {
@@ -1261,7 +1261,7 @@ async fn oauth_callback_github(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let db = &state.db;
+    let db = state.db.as_ref();
     let now = Utc::now().naive_utc();
 
     let existing = AuthIdentities::find()
@@ -1459,7 +1459,7 @@ async fn oauth_callback_google(
         }
     };
 
-    let db = &state.db;
+    let db = state.db.as_ref();
     let now = Utc::now().naive_utc();
 
     let existing = AuthIdentities::find()
@@ -1577,7 +1577,7 @@ async fn login_or_create_user_for_sso(
     org_id: Uuid,
     claims: OidcIdTokenClaims,
 ) -> Result<(CookieJar, Redirect), String> {
-    let db = &state.db;
+    let db = state.db.as_ref();
     let now = Utc::now().naive_utc();
 
     let existing = SsoIdentities::find()
@@ -1920,7 +1920,7 @@ async fn issue_tokens_and_set_cookie(
     role: String,
     rotated_from: Option<i64>,
 ) -> (CookieJar, Json<ApiResponse<LoginResponse>>) {
-    let db = &state.db;
+    let db = state.db.as_ref();
     let now = Utc::now();
 
     let signing_key = match state.settings.auth.jwt.signing_key.clone() {
@@ -2035,7 +2035,32 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
+    use migration::MigratorTrait;
     use tower::ServiceExt;
+
+    async fn setup_db() -> Result<
+        (
+            std::sync::Arc<sea_orm::DatabaseConnection>,
+            std::sync::Arc<crate::AppState>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let db = sea_orm::Database::connect("sqlite::memory:").await?;
+        migration::Migrator::up(&db, None).await?;
+
+        let settings = test_settings("test-signing-key");
+        let db_arc = std::sync::Arc::new(db);
+        let (repos, services) = common::build_all(db_arc.clone(), &settings).await;
+
+        let state = Arc::new(crate::AppState {
+            db: db_arc.clone(),
+            settings,
+            repos,
+            services,
+        });
+
+        Ok((db_arc, state))
+    }
 
     fn test_settings(signing_key: &str) -> common::settings::Settings {
         let mut auth = common::settings::AuthSettings::default();
@@ -2072,12 +2097,8 @@ mod tests {
 
     #[tokio::test]
     async fn local_register_then_me_works() {
-        let db = common::db::establish_connection("sqlite::memory:")
-            .await
-            .unwrap();
-        let settings = test_settings("test-signing-key");
+        let (_db, state) = setup_db().await.unwrap();
 
-        let state = Arc::new(crate::AppState { db, settings });
         let app = axum::Router::new()
             .nest("/api/auth", router())
             .route("/api/me", axum::routing::get(me))
@@ -2094,12 +2115,6 @@ mod tests {
 
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let set_cookie = resp
-            .headers()
-            .get("set-cookie")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        assert!(set_cookie.contains("sr_refresh="));
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();

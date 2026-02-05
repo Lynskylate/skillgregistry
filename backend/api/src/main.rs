@@ -3,18 +3,20 @@ mod handlers;
 mod models;
 
 use axum::{http::HeaderValue, routing::get, Router};
-use common::db;
+use common::build_all;
 use common::settings::Settings;
-use sea_orm::DatabaseConnection;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+#[derive(Clone)]
 pub struct AppState {
-    pub db: DatabaseConnection,
+    pub db: Arc<sea_orm::DatabaseConnection>,
     pub settings: Settings,
+    pub services: common::Services,
+    pub repos: common::Repositories,
 }
 
 #[tokio::main]
@@ -30,16 +32,21 @@ async fn main() -> anyhow::Result<()> {
 
     let db_url = settings.database.url.clone();
 
-    let db = db::establish_connection(&db_url).await?;
+    let db = common::db::establish_connection(&db_url).await?;
+    let db = Arc::new(db);
+
+    let (repos, services) = build_all(db.clone(), &settings).await;
 
     let state = Arc::new(AppState {
         db,
         settings: settings.clone(),
+        services,
+        repos,
     });
 
     let cors = build_cors(&settings);
 
-    let app = Router::new()
+    let app: Router = Router::new()
         .route("/", get(|| async { "Skill Registry API" }))
         .route("/api/skills", get(handlers::list_skills))
         .route("/api/skills/:owner/:repo/:name", get(handlers::get_skill))
