@@ -1,131 +1,132 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# E2E Test Runner Script
-# This script sets up and runs end-to-end tests locally
+set -euo pipefail
 
-set -e
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BACKEND_DIR="$ROOT_DIR/backend"
 
-echo "========================================="
-echo "Setting up E2E Test Environment"
-echo "========================================="
-
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Function to print colored messages
 print_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+  echo -e "${GREEN}[INFO]${NC} $1"
 }
 
 print_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+  echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
 print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+  echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Cleanup function
 cleanup() {
-    print_info "Cleaning up test environment..."
-    docker-compose -f docker-compose.test.yml down -v 2>/dev/null || true
-    
-    # Kill any remaining processes
-    if [ -f /tmp/e2e_api.pid ]; then
-        kill $(cat /tmp/e2e_api.pid) 2>/dev/null || true
-        rm /tmp/e2e_api.pid
-    fi
-    if [ -f /tmp/e2e_worker.pid ]; then
-        kill $(cat /tmp/e2e_worker.pid) 2>/dev/null || true
-        rm /tmp/e2e_worker.pid
-    fi
+  print_info "Cleaning up test environment..."
+
+  if [ -f /tmp/e2e_worker.pid ]; then
+    kill "$(cat /tmp/e2e_worker.pid)" 2>/dev/null || true
+    rm -f /tmp/e2e_worker.pid
+  fi
+
+  docker-compose -f "$ROOT_DIR/docker-compose.test.yml" down -v >/dev/null 2>&1 || true
 }
 
-# Register cleanup on exit
+load_env_token() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    return
+  fi
+
+  if [ -f "$ROOT_DIR/.env" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$ROOT_DIR/.env"
+    set +a
+  fi
+
+  if [ -z "${GITHUB_TOKEN:-}" ]; then
+    print_error "GITHUB_TOKEN is required. Set it in environment or in $ROOT_DIR/.env"
+    exit 1
+  fi
+}
+
+wait_for_port() {
+  local host="$1"
+  local port="$2"
+  local name="$3"
+  local max_attempts="${4:-60}"
+
+  for ((i=1; i<=max_attempts; i++)); do
+    if bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1; then
+      print_info "$name is ready on ${host}:${port}"
+      return 0
+    fi
+    sleep 2
+  done
+
+  print_error "$name did not become ready on ${host}:${port}"
+  return 1
+}
+
 trap cleanup EXIT
 
-# Check prerequisites
 print_info "Checking prerequisites..."
 command -v docker >/dev/null 2>&1 || { print_error "Docker is not installed"; exit 1; }
 command -v docker-compose >/dev/null 2>&1 || { print_error "Docker Compose is not installed"; exit 1; }
 command -v cargo >/dev/null 2>&1 || { print_error "Cargo is not installed"; exit 1; }
 
-# Start test infrastructure
-print_info "Starting test infrastructure (PostgreSQL, Temporal, S3)..."
-docker-compose -f docker-compose.test.yml up -d
+load_env_token
 
-# Wait for services to be ready
-print_info "Waiting for services to be healthy..."
-sleep 10
+print_info "Starting test services (RustFS + Temporal)..."
+docker-compose -f "$ROOT_DIR/docker-compose.test.yml" up -d
 
-# Check PostgreSQL
-print_info "Checking PostgreSQL..."
-docker-compose -f docker-compose.test.yml exec -T postgres-test pg_isready -U postgres || {
-    print_error "PostgreSQL is not ready"
-    exit 1
-}
+print_info "Waiting for services to be ready..."
+wait_for_port "127.0.0.1" "9002" "RustFS" 60
+wait_for_port "127.0.0.1" "7234" "Temporal" 60
 
-# Set environment variables
-export DATABASE_URL="postgres://postgres:password@localhost:5433/skillregistry_test"
-export API_URL="http://localhost:3000"
+export DATABASE_URL="sqlite:///tmp/skillregistry-e2e.db?mode=rwc"
 export TEMPORAL_SERVER_URL="http://localhost:7234"
+export SKILLREGISTRY_TEMPORAL_TASK_QUEUE="skill-registry-queue"
 export S3_ENDPOINT="http://localhost:9002"
-export AWS_ACCESS_KEY_ID="rustfsadmin"
-export AWS_SECRET_ACCESS_KEY="rustfsadmin"
 export S3_BUCKET="skills"
 export S3_REGION="us-east-1"
+export S3_FORCE_PATH_STYLE="true"
+export AWS_ACCESS_KEY_ID="rustfsadmin"
+export AWS_SECRET_ACCESS_KEY="rustfsadmin"
+export SKILLREGISTRY_SETUP_SKIP_TEMPORAL="true"
+export E2E_DISCOVERY_QUERY="repo:anthropics/skills"
+export E2E_TARGET_OWNER="anthropics"
+export E2E_TARGET_REPO="skills"
+export E2E_DISCOVERY_TIMEOUT_SECS="360"
+export E2E_SYNC_TIMEOUT_SECS="600"
 export RUST_LOG="info"
 
-# Navigate to backend directory
-cd backend
+cd "$BACKEND_DIR"
+rm -f /tmp/skillregistry-e2e.db
 
-# Run migrations
-print_info "Running database migrations..."
+print_info "Running setup (migrations + S3 bucket)..."
 cargo run --bin setup
 
-# Build the project
-print_info "Building backend..."
-cargo build --release
-
-# Start API server
-print_info "Starting API server..."
-cargo run --bin api &
-API_PID=$!
-echo $API_PID > /tmp/e2e_api.pid
-sleep 5
-
-# Verify API is running
-if ! curl -s http://localhost:3000/health > /dev/null; then
-    print_error "API server failed to start"
-    exit 1
-fi
-print_info "API server is running (PID: $API_PID)"
-
-# Start Worker
-print_info "Starting Worker..."
-cargo run --bin worker &
+print_info "Starting worker..."
+cargo run --bin worker > /tmp/e2e_worker.log 2>&1 &
 WORKER_PID=$!
-echo $WORKER_PID > /tmp/e2e_worker.pid
-sleep 5
+echo "$WORKER_PID" > /tmp/e2e_worker.pid
+sleep 8
 
-print_info "Worker is running (PID: $WORKER_PID)"
+print_info "Running E2E test (discovery + upload)..."
+set +e
+cargo test -p e2e-tests --test e2e test_discovery_sync_and_upload -- --ignored --nocapture
+TEST_EXIT_CODE=$?
+set -e
 
-# Run E2E tests
-print_info "Running E2E tests..."
-echo "========================================="
-cargo test -p e2e-tests --test e2e -- --ignored --nocapture
-
-# Test results
-if [ $? -eq 0 ]; then
-    print_info "========================================="
-    print_info "All E2E tests passed! ✓"
-    print_info "========================================="
-else
-    print_error "========================================="
-    print_error "Some E2E tests failed! ✗"
-    print_error "========================================="
-    exit 1
+if [ $TEST_EXIT_CODE -ne 0 ]; then
+  print_error "E2E test failed"
+  if [ -f /tmp/e2e_worker.log ]; then
+    print_warn "Worker log tail:"
+    tail -n 200 /tmp/e2e_worker.log || true
+  fi
+  exit $TEST_EXIT_CODE
 fi
+
+print_info "E2E test passed"

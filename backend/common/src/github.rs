@@ -64,13 +64,19 @@ impl GithubClient {
         let per_page = 100;
 
         loop {
-            let url = format!(
-                "{}/search/repositories?q={}&per_page={}&page={}",
-                self.api_url, query, per_page, page
-            );
-            tracing::debug!("Fetching page {}: {}", page, url);
+            let url = format!("{}/search/repositories", self.api_url);
+            tracing::debug!("Fetching repo search page {}", page);
 
-            let resp = self.send_request_with_retry(&url).await?;
+            let per_page_str = per_page.to_string();
+            let page_str = page.to_string();
+
+            let resp = self
+                .send_request_with_retry(self.client.get(&url).query(&[
+                    ("q", query),
+                    ("per_page", per_page_str.as_str()),
+                    ("page", page_str.as_str()),
+                ]))
+                .await?;
             let search_resp: GithubSearchResponse = resp.json().await?;
 
             if search_resp.items.is_empty() {
@@ -95,13 +101,19 @@ impl GithubClient {
         let per_page = 100;
 
         loop {
-            let url = format!(
-                "{}/search/code?q={}&per_page={}&page={}",
-                self.api_url, query, per_page, page
-            );
-            tracing::debug!("Fetching code page {}: {}", page, url);
+            let url = format!("{}/search/code", self.api_url);
+            tracing::debug!("Fetching code search page {}", page);
 
-            let resp = self.send_request_with_retry(&url).await?;
+            let per_page_str = per_page.to_string();
+            let page_str = page.to_string();
+
+            let resp = self
+                .send_request_with_retry(self.client.get(&url).query(&[
+                    ("q", query),
+                    ("per_page", per_page_str.as_str()),
+                    ("page", page_str.as_str()),
+                ]))
+                .await?;
             let search_resp: GithubCodeSearchResponse = resp.json().await?;
 
             if search_resp.items.is_empty() {
@@ -124,16 +136,20 @@ impl GithubClient {
 
     pub async fn download_zipball(&self, owner: &str, repo: &str) -> Result<Vec<u8>> {
         let url = format!("{}/repos/{}/{}/zipball", self.api_url, owner, repo);
-        let resp = self.send_request_with_retry(&url).await?;
+        let resp = self.send_request_with_retry(self.client.get(&url)).await?;
         let bytes = resp.bytes().await?;
         Ok(bytes.to_vec())
     }
 
-    async fn send_request_with_retry(&self, url: &str) -> Result<Response> {
+    async fn send_request_with_retry(&self, req: reqwest::RequestBuilder) -> Result<Response> {
         let mut attempts = 0;
         loop {
             attempts += 1;
-            let resp = self.client.get(url).send().await?;
+            let resp = req
+                .try_clone()
+                .ok_or_else(|| anyhow::anyhow!("failed to clone request"))?
+                .send()
+                .await?;
 
             match resp.status() {
                 StatusCode::OK => return Ok(resp),
@@ -155,17 +171,12 @@ impl GithubClient {
                 }
                 StatusCode::UNPROCESSABLE_ENTITY => {
                     return Err(anyhow::anyhow!(
-                        "Unprocessable Entity (422) on url {}. Check query syntax.",
-                        url
+                        "Unprocessable Entity (422) when calling GitHub API. Check query syntax."
                     ));
                 }
-                _ => {
+                status => {
                     if attempts >= 3 {
-                        return Err(anyhow::anyhow!(
-                            "Request failed: {} on url {}",
-                            resp.status(),
-                            url
-                        ));
+                        return Err(anyhow::anyhow!("Request failed with status: {}", status));
                     }
                     tokio::time::sleep(Duration::from_secs(2u64.pow(attempts))).await;
                 }

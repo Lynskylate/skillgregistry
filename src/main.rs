@@ -1,11 +1,12 @@
-//! 不依赖 Temporal SDK 的单元测试
-//! 验证简化 API 的核心逻辑
+//! Unit-test-only mock implementation that does not depend on the Temporal SDK.
+//!
+//! This validates the core logic of the simplified registration APIs.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-// ============ 模拟 Temporal SDK 类型 ============
+// ============ Mock Temporal SDK types ============
 
 struct MockPayload {
     data: Vec<u8>,
@@ -24,9 +25,9 @@ impl std::fmt::Display for MockActivityError {
 
 impl std::error::Error for MockActivityError {}
 
-// ============ 简化 API 的核心实现（不依赖 Temporal SDK） ============
+// ============ Core simplified APIs (no Temporal SDK dependency) ============
 
-/// 模拟的 Worker 类型
+/// Mock worker type.
 type ActivityFn = Box<dyn Fn(MockActContext, MockPayload) -> Pin<Box<dyn Future<Output = Result<MockPayload, MockActivityError>> + Send>> + Send + Sync>;
 
 struct MockWorker {
@@ -50,7 +51,7 @@ impl MockWorker {
     }
 }
 
-/// 自动 JSON 序列化的注册 trait
+/// Registration trait with automatic JSON (de)serialization.
 pub trait ActivityRegistrarJson {
     fn register_activity_json<F, Input, Output, Fut>(
         &mut self,
@@ -101,21 +102,22 @@ impl ActivityRegistrarJson for MockWorker {
     }
 }
 
-/// 简化注册宏
+/// Simplified registration macro.
 #[macro_export]
 macro_rules! register_struct_activity {
     ($worker:expr, $activity_type:expr, $service:expr, $method:ident) => {
         {
-            let svc = Arc::clone(&$service);
+            // Use fully-qualified paths because this is a `#[macro_export]` macro.
+            let svc = ::std::sync::Arc::clone(&$service);
             $worker.register_activity_json($activity_type, move |_ctx: MockActContext, input| {
-                let svc = Arc::clone(&svc);
+                let svc = ::std::sync::Arc::clone(&svc);
                 async move { svc.$method(input).await }
             });
         }
     };
 }
 
-/// Worker 扩展 trait
+/// Worker extension trait.
 trait WorkerExt {
     fn register_service_activity<T, Input, Output, Fut>(
         &mut self,
@@ -135,7 +137,7 @@ impl WorkerExt for MockWorker {
         &mut self,
         activity_type: impl Into<String>,
         service: Arc<T>,
-        _method: fn(&T, Input) -> Fut,
+        method: fn(&T, Input) -> Fut,
     )
     where
         T: Send + Sync + 'static,
@@ -146,12 +148,12 @@ impl WorkerExt for MockWorker {
         let svc = service.clone();
         self.register_activity_json(activity_type, move |_ctx: MockActContext, input: Input| {
             let svc = Arc::clone(&svc);
-            async move { _method(&*svc, input).await }
+            async move { method(&*svc, input).await }
         });
     }
 }
 
-// ============ 测试用的服务和类型 ============
+// ============ Test services and types ============
 
 use serde::{Deserialize, Serialize};
 
@@ -188,7 +190,7 @@ impl GreeterService {
     }
 }
 
-// ============ 单元测试 ============
+// ============ Unit tests ============
 
 #[cfg(test)]
 mod tests {
@@ -199,7 +201,7 @@ mod tests {
         let mut worker = MockWorker::new();
         let service = Arc::new(GreeterService::new("Hello"));
 
-        // 使用宏注册（1 行代码）
+        // Register via macro (1 line)
         register_struct_activity!(worker, "greet", service, greet);
 
         assert_eq!(worker.activities.len(), 1);
@@ -211,7 +213,7 @@ mod tests {
         let mut worker = MockWorker::new();
         let service = Arc::new(GreeterService::new("Hello"));
 
-        // 使用 trait 注册（1 行代码）
+        // Register via trait (1 line)
         worker.register_service_activity("farewell", service, GreeterService::farewell);
 
         assert_eq!(worker.activities.len(), 1);
@@ -223,7 +225,7 @@ mod tests {
         let mut worker = MockWorker::new();
         let service = Arc::new(GreeterService::new("Hi"));
 
-        // 注册多个 activities
+        // Register multiple activities
         register_struct_activity!(worker, "greet", service, greet);
         register_struct_activity!(worker, "farewell", service, farewell);
 
@@ -239,7 +241,7 @@ mod tests {
 
         register_struct_activity!(worker, "greet", service, greet);
 
-        // 测试 activity 执行
+        // Test activity execution
         let input = TestInput { name: "World".to_string() };
         let payload = MockPayload {
             data: serde_json::to_vec(&input).unwrap(),
@@ -257,41 +259,41 @@ mod tests {
     fn test_code_reduction() {
         println!("\n");
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        println!("代码行数对比");
+        println!("Line count comparison");
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         println!();
-        println!("原始 API（手动）:");
-        println!("  - 每个 Activity: ~25 行");
-        println!("  - 5 个 Activities: 125 行");
+        println!("Original API (manual):");
+        println!("  - per Activity: ~25 lines");
+        println!("  - 5 Activities: 125 lines");
         println!();
-        println!("简化 API（宏）:");
-        println!("  - 每个 Activity: 1 行");
-        println!("  - 5 个 Activities: 5 行");
+        println!("Simplified API (macro):");
+        println!("  - per Activity: 1 line");
+        println!("  - 5 Activities: 5 lines");
         println!();
-        println!("减少: ~96% 的样板代码！");
+        println!("Reduction: ~96% boilerplate removed!");
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
 }
 
-// ============ Main（运行测试） ============
+// ============ Main (runs the demo) ============
 
 #[tokio::main]
 async fn main() {
     println!("Running simplified API tests...\n");
 
-    // 测试 1: 宏注册
+    // Test 1: macro registration
     let mut worker = MockWorker::new();
     let service = Arc::new(GreeterService::new("Hello"));
     register_struct_activity!(worker, "greet", service, greet);
     println!("✅ Test 1 passed: Macro registration (1 line)");
 
-    // 测试 2: Trait 注册
+    // Test 2: trait registration
     let mut worker = MockWorker::new();
     let service = Arc::new(GreeterService::new("Hello"));
     worker.register_service_activity("farewell", service, GreeterService::farewell);
     println!("✅ Test 2 passed: Trait registration (1 line)");
 
-    // 测试 3: Activity 执行
+    // Test 3: activity execution
     let mut worker = MockWorker::new();
     let service = Arc::new(GreeterService::new("Hello"));
     register_struct_activity!(worker, "greet", service, greet);
@@ -310,9 +312,9 @@ async fn main() {
     println!("All tests passed!");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
-    println!("总结：");
-    println!("  - 从 ~25 行减少到 1-3 行");
-    println!("  - 自动 JSON 序列化");
-    println!("  - 编译时类型安全");
-    println!("  - 支持依赖注入");
+    println!("Takeaways:");
+    println!("  - reduce ~25 lines to 1-3 lines");
+    println!("  - automatic JSON (de)serialization");
+    println!("  - compile-time type safety");
+    println!("  - supports dependency injection");
 }

@@ -1543,10 +1543,20 @@ name = "e2e-tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "reqwest",
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
+ "aws-types",
+ "chrono",
+ "common",
+ "sea-orm",
  "serde",
  "serde_json",
+ "temporalio-client",
+ "temporalio-common",
+ "temporalio-sdk-core",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

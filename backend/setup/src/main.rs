@@ -44,10 +44,24 @@ async fn main() -> anyhow::Result<()> {
     setup_s3(&settings).await?;
 
     // 4. Temporal Setup
-    setup_temporal(&settings).await?;
+    if should_skip_temporal_setup() {
+        tracing::info!(
+            "Skipping Temporal setup because SKILLREGISTRY_SETUP_SKIP_TEMPORAL is enabled"
+        );
+    } else {
+        setup_temporal(&settings).await?;
+    }
 
     tracing::info!("Setup completed successfully!");
     Ok(())
+}
+
+fn should_skip_temporal_setup() -> bool {
+    let value = std::env::var("SKILLREGISTRY_SETUP_SKIP_TEMPORAL").unwrap_or_default();
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 async fn seed_admin(db: &DatabaseConnection, settings: &Settings) -> anyhow::Result<()> {

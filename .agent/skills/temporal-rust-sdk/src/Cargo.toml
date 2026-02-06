@@ -12,8 +12,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Temporal SDK dependencies
-temporalio-sdk = { git = "https://github.com/temporalio/sdk-core", branch = "master" }
-temporalio-common = { git = "https://github.com/temporalio/sdk-core", branch = "master" }
+temporalio-sdk = { git = "https://github.com/temporalio/sdk-core", rev = "f837d73ec1908679573ced8734e9a778f89956aa" }
+temporalio-common = { git = "https://github.com/temporalio/sdk-core", rev = "f837d73ec1908679573ced8734e9a778f89956aa" }
 
 [dev-dependencies]
 tokio = { version = "1.32", features = ["rt-multi-thread", "macros"] }

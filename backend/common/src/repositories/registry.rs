@@ -130,10 +130,10 @@ impl RegistryRepository for RegistryRepositoryImpl {
                 .map(|b| b.repository_url.clone())
                 .collect();
 
-            let _ = Blacklist::delete_many()
+            Blacklist::delete_many()
                 .filter(blacklist::Column::CreatedAt.lt(expiry_date))
                 .exec(self.db.as_ref())
-                .await;
+                .await?;
 
             for url in expired_urls {
                 if let Some(repo) = SkillRegistry::find()
@@ -177,7 +177,7 @@ impl RegistryRepository for RegistryRepositoryImpl {
                 created_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()
             };
-            let _ = blacklist_entry.insert(self.db.as_ref()).await;
+            blacklist_entry.insert(self.db.as_ref()).await?;
             Ok(())
         }
     }
@@ -191,7 +191,7 @@ impl RegistryRepository for RegistryRepositoryImpl {
         active.status = Set("blacklisted".to_string());
         active.blacklist_reason = Set(Some(reason.to_string()));
         active.blacklisted_at = Set(Some(chrono::Utc::now().naive_utc()));
-        let _ = active.update(self.db.as_ref()).await;
+        active.update(self.db.as_ref()).await?;
         Ok(())
     }
 
@@ -206,7 +206,7 @@ impl RegistryRepository for RegistryRepositoryImpl {
         active.blacklist_reason = Set(None);
         active.blacklisted_at = Set(None);
         active.updated_at = Set(chrono::Utc::now().naive_utc());
-        let _ = active.update(self.db.as_ref()).await;
+        active.update(self.db.as_ref()).await?;
         Ok(())
     }
 }

@@ -51,19 +51,7 @@ impl SyncService {
     }
 
     pub async fn process_one(&self, registry_id: i32) -> Result<SyncResult> {
-        let _ = std::fs::write(
-            "/tmp/worker_debug_process_one.txt",
-            format!("process_one called with registry_id={}\n", registry_id),
-        );
-        eprintln!("[SYNC] process_one called with registry_id={}", registry_id);
-        std::fs::write(
-            "/tmp/worker_debug.txt",
-            format!(
-                "[SYNC] process_one called with registry_id={}\n",
-                registry_id
-            ),
-        )
-        .ok();
+        tracing::debug!(registry_id, "process_one called");
 
         let repo = SkillRegistry::find()
             .filter(skill_registry::Column::Id.eq(registry_id))
@@ -77,10 +65,6 @@ impl SyncService {
             repo.name,
             repo.id,
             repo.status
-        );
-        eprintln!(
-            "[SYNC] Processing repo: {}/{} (id={}, status='{}')",
-            repo.owner, repo.name, repo.id, repo.status
         );
 
         if repo.status == "blacklisted" {
@@ -101,10 +85,6 @@ impl SyncService {
             repo.url,
             is_blacklisted
         );
-        eprintln!(
-            "[SYNC] Blacklist check: url={}, is_blacklisted={}",
-            repo.url, is_blacklisted
-        );
 
         if is_blacklisted {
             tracing::info!("Returning SkippedBlacklisted due to blacklist entry");
@@ -119,7 +99,6 @@ impl SyncService {
             .download_zipball(&repo.owner, &repo.name)
             .await?;
         tracing::info!("Downloaded zip: {} bytes", zip_data.len());
-        eprintln!("[SYNC] Downloaded zip: {} bytes", zip_data.len());
 
         let file_map = match zip_to_file_map(&zip_data) {
             Ok(m) => m,
@@ -137,11 +116,6 @@ impl SyncService {
         };
 
         let result = self.sync_from_file_map(&repo, &file_map).await;
-        eprintln!(
-            "[SYNC] sync_from_file_map result (from zip): status={:?}, version={:?}",
-            result.as_ref().map(|r| &r.status),
-            result.as_ref().map(|r| &r.version)
-        );
         tracing::info!("sync_from_file_map result (from zip): {:?}", result);
         result
     }
@@ -294,15 +268,10 @@ impl SyncService {
             });
         }
 
-        eprintln!(
-            "[SYNC] Before update - repo.status='{}', repo.id={}",
-            repo.status, repo.id
-        );
+        tracing::debug!(repo_id = repo.id, "Updating skill registry entry to active");
         let mut active: skill_registry::ActiveModel = repo.clone().into();
-        eprintln!("[SYNC] After clone - active.status={:?}", active.status);
         active.status = Set("active".to_string());
         active.repo_type = Set(Some("skill".to_string()));
-        eprintln!("[SYNC] After setting - active.status={:?}", active.status);
         active.update(&self.db).await?;
         Ok(SyncResult {
             status: if changed {

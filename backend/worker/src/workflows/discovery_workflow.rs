@@ -4,8 +4,15 @@ use std::time::Duration;
 use temporalio_sdk::{ActivityOptions, WfContext, WfExitValue};
 
 pub async fn discovery_workflow(ctx: WfContext) -> Result<WfExitValue<String>, anyhow::Error> {
+    // Accept optional workflow input for deterministic one-shot discovery in E2E.
+    let queries = ctx
+        .get_args()
+        .first()
+        .and_then(|payload| serde_json::from_slice::<Vec<String>>(&payload.data).ok())
+        .filter(|q| !q.is_empty())
+        .unwrap_or_else(|| vec!["topic:agent-skill".to_string()]);
+
     // 1. Discovery Activity
-    let queries = vec!["topic:agent-skill".to_string()];
     let discovery_opts = ActivityOptions {
         activity_type: "discovery_activity".to_string(),
         input: create_json_payload(&queries),
