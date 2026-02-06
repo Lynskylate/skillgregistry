@@ -6,6 +6,11 @@ metadata:
   language: rust
   framework: temporal
   status: prototype
+compatibility:
+  runtime:
+    rust: "1.70+"
+  temporal-server: ">= 1.20 (tested locally)"
+allowed-tools: []
 ---
 
 # Temporal Rust SDK Skill
@@ -49,12 +54,29 @@ Demonstrates how to execute a Local Activity from a Workflow:
 - Runs a normal Activity to produce the final result.
 - Shows how to configure basic Local Activity timeouts.
 
+### 5. Struct Activity (`struct-activity`)
+Shows how to register an Activity implemented as a struct method:
+- Defines `GreeterService` with `async fn greet(&self, input: GreetInput) -> Result<GreetOutput, ActivityError>`.
+- Registers via closure capture: `worker.register_activity("greet-activity", move |_ctx, input| async move { svc.greet(input).await })`.
+- Demonstrates struct input/output with `serde` (automatic JSON encode/decode).
+- Includes a workflow passing `GreetInput` and returning the `GreetOutput.message`.
+
+#### Verification
+- Start the worker:
+  - `cd examples`
+  - `cargo run -p struct-activity -- worker`
+- Start the starter:
+  - `cargo run -p struct-activity -- starter --name Alice`
+- Expected behavior:
+  - Worker registers `greet-activity` from an instantiated `GreeterService` whose dependencies live in struct fields.
+  - Workflow result prints `Hello, Alice` (proving the Activity used the struct field `prefix` without polluting the method signature).
+
 ## Usage Guide
 
 ### Prerequisites
-1.  **Rust Toolchain**: Install via `rustup`.
-2.  **Protobuf Compiler**: `protoc` must be in your `PATH`.
-3.  **Temporal Server**: Running locally at `localhost:7233`.
+1.  Rust Toolchain: Install via `rustup`.
+2.  Protobuf Compiler: `protoc` must be in your `PATH`.
+3.  Temporal Server: Running locally at `localhost:7233`.
 
 ### Running an Example
 
@@ -65,7 +87,7 @@ cd examples
 
 **Step 1: Start the Worker**
 ```bash
-# Replace <package> with: helloworld, batch-sliding-window, saga, or localactivity
+# Replace <package> with: helloworld, batch-sliding-window, saga, localactivity, or struct-activity
 cargo run -p <package> -- worker
 ```
 
@@ -80,6 +102,6 @@ cargo run -p <package> -- starter
 
 ## Implementation Details
 
--   **Client Identity**: The prototype SDK requires setting `identity` in `ClientOptions`.
--   **Result Polling**: The SDK does not yet have a blocking `get_result` helper. These examples implement a polling loop using `get_workflow_execution_history` to fetch the final result.
--   **Workflow IDs**: Uses `uuid` to generate unique Workflow IDs for every run to avoid "Workflow execution already running" errors.
+- Client Identity: The prototype SDK requires setting `identity` in `ClientOptions`.
+- Result Polling: The SDK does not yet have a blocking `get_result` helper. These examples implement a polling loop using `get_workflow_execution_history` to fetch the final result.
+- Workflow IDs: Uses `uuid` to generate unique Workflow IDs for every run to avoid "Workflow execution already running" errors.
