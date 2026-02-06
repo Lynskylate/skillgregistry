@@ -12,23 +12,15 @@ env:
 
 jobs:
   e2e-tests:
-    name: E2E Tests
+    name: E2E Discovery + Upload
     runs-on: ubuntu-latest
-    
+
     services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: skillregistry_test
+      rustfs:
+        image: rustfs/rustfs:latest
         ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          - 9000:9000
+          - 9001:9001
 
     steps:
       - uses: actions/checkout@v4
@@ -54,8 +46,7 @@ jobs:
       - name: Start Temporal Server
         run: |
           temporal server start-dev --headless &
-          
-          # Wait for Temporal to be ready
+
           echo "Waiting for Temporal server to start..."
           for i in {1..30}; do
             if temporal operator cluster health 2>/dev/null; then
@@ -65,114 +56,76 @@ jobs:
             echo "Waiting for Temporal server... ($i/30)"
             sleep 2
           done
-          
-          # Final health check
+
           temporal operator cluster health
 
-      - name: Setup MinIO (S3-compatible storage)
-        run: |
-          docker run -d \
-            --name minio \
-            -p 9000:9000 \
-            -p 9001:9001 \
-            -e "MINIO_ROOT_USER=minioadmin" \
-            -e "MINIO_ROOT_PASSWORD=minioadmin" \
-            minio/minio server /data --console-address ":9001"
+      - name: Prepare SQLite database
+        working-directory: ./backend
+        run: rm -f /tmp/skillregistry-e2e.db
 
-          # Wait for MinIO to be ready
-          sleep 5
-
-          # Install MinIO client
-          wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O mc
-          chmod +x mc
-
-          # Create test bucket using mc client
-          ./mc alias set myminio http://localhost:9000 minioadmin minioadmin
-          ./mc mb myminio/skills || true
-
-      - name: Run database migrations
+      - name: Run setup (migrations + S3 bucket)
         working-directory: ./backend
         env:
-          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+          DATABASE_URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
           S3_ENDPOINT: http://localhost:9000
           S3_BUCKET: skills
           S3_REGION: us-east-1
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
+          S3_FORCE_PATH_STYLE: "true"
+          AWS_ACCESS_KEY_ID: rustfsadmin
+          AWS_SECRET_ACCESS_KEY: rustfsadmin
           TEMPORAL_SERVER_URL: http://localhost:7233
-        run: |
-          cargo run --bin setup
-
-      - name: Build backend
-        working-directory: ./backend
-        run: cargo build --verbose
-
-      - name: Start API server
-        working-directory: ./backend
-        env:
-          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
-          S3_ENDPOINT: http://localhost:9000
-          S3_BUCKET: skills
-          S3_REGION: us-east-1
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
-          TEMPORAL_SERVER_URL: http://localhost:7233
+          SKILLREGISTRY_SETUP_SKIP_TEMPORAL: "true"
           RUST_LOG: info
-        run: |
-          cargo run --bin api &
-          API_PID=$!
-          echo $API_PID > /tmp/api.pid
-          
-          # Wait for API to be ready
-          echo "Waiting for API server to start..."
-          for i in {1..30}; do
-            if curl -f http://localhost:3000/health 2>/dev/null; then
-              echo "API server is ready"
-              break
-            fi
-            echo "Waiting for API server... ($i/30)"
-            sleep 1
-          done
+        run: cargo run --bin setup
 
       - name: Start Worker
         working-directory: ./backend
         env:
-          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+          DATABASE_URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
           S3_ENDPOINT: http://localhost:9000
           S3_BUCKET: skills
           S3_REGION: us-east-1
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
+          S3_FORCE_PATH_STYLE: "true"
+          AWS_ACCESS_KEY_ID: rustfsadmin
+          AWS_SECRET_ACCESS_KEY: rustfsadmin
           TEMPORAL_SERVER_URL: http://localhost:7233
+          SKILLREGISTRY_TEMPORAL_TASK_QUEUE: skill-registry-queue
+          GITHUB_TOKEN: ${{ secrets.E2E_GITHUB_TOKEN }}
           RUST_LOG: info
         run: |
-          cargo run --bin worker &
+          cargo run --bin worker > /tmp/worker.log 2>&1 &
           WORKER_PID=$!
-          echo $WORKER_PID > /tmp/worker.pid
-          sleep 5
+          echo "$WORKER_PID" > /tmp/worker.pid
+          sleep 8
 
-      - name: Run E2E tests
+      - name: Run E2E test (discovery + upload)
         working-directory: ./backend
         env:
-          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
-          API_URL: http://localhost:3000
+          DATABASE_URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
           TEMPORAL_SERVER_URL: http://localhost:7233
+          SKILLREGISTRY_TEMPORAL_TASK_QUEUE: skill-registry-queue
           S3_ENDPOINT: http://localhost:9000
+          S3_BUCKET: skills
+          S3_REGION: us-east-1
+          S3_FORCE_PATH_STYLE: "true"
+          AWS_ACCESS_KEY_ID: rustfsadmin
+          AWS_SECRET_ACCESS_KEY: rustfsadmin
+          GITHUB_TOKEN: ${{ secrets.E2E_GITHUB_TOKEN }}
+          E2E_DISCOVERY_QUERY: repo:anthropics/skills
+          E2E_TARGET_OWNER: anthropics
+          E2E_TARGET_REPO: skills
+          E2E_DISCOVERY_TIMEOUT_SECS: "360"
+          E2E_SYNC_TIMEOUT_SECS: "600"
           RUST_LOG: debug
         run: |
-          cargo test -p e2e-tests --test e2e -- --ignored --nocapture
+          cargo test -p e2e-tests --test e2e test_discovery_sync_and_upload -- --ignored --nocapture
 
       - name: Cleanup
         if: always()
         run: |
-          if [ -f /tmp/api.pid ]; then
-            kill $(cat /tmp/api.pid) || true
-          fi
           if [ -f /tmp/worker.pid ]; then
-            kill $(cat /tmp/worker.pid) || true
+            kill "$(cat /tmp/worker.pid)" || true
           fi
-          docker stop minio || true
-          docker rm minio || true
 
       - name: Upload test logs
         if: failure()
@@ -180,4 +133,5 @@ jobs:
         with:
           name: e2e-test-logs
           path: |
-            backend/target/debug/e2e-*.log
+            /tmp/worker.log
+            /tmp/skillregistry-e2e.db
