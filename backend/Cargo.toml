@@ -5,5 +5,6 @@ members = [
     "common",
     "migration",
     "setup",
+    "e2e-tests",
 ]
 resolver = "2"

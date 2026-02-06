@@ -198,6 +198,20 @@ impl Settings {
 
         figment = figment.merge(
             Env::raw()
+                .only(&["DATABASE_URL"])
+                .map(|_| "database.url".into()),
+        );
+
+        figment = figment.merge(
+            Env::raw()
+                .only(&["S3_ENDPOINT"])
+                .map(|_| "s3.endpoint".into()),
+        );
+        figment = figment.merge(Env::raw().only(&["S3_BUCKET"]).map(|_| "s3.bucket".into()));
+        figment = figment.merge(Env::raw().only(&["S3_REGION"]).map(|_| "s3.region".into()));
+
+        figment = figment.merge(
+            Env::raw()
                 .only(&["AWS_ACCESS_KEY_ID"])
                 .map(|_| "s3.access_key_id".into()),
         );
@@ -211,6 +225,12 @@ impl Settings {
             Env::raw()
                 .only(&["S3_FORCE_PATH_STYLE"])
                 .map(|_| "s3.force_path_style".into()),
+        );
+
+        figment = figment.merge(
+            Env::raw()
+                .only(&["TEMPORAL_SERVER_URL"])
+                .map(|_| "temporal.server_url".into()),
         );
 
         figment = figment.merge(

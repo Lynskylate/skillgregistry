@@ -1,0 +1,183 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: skillregistry_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache Cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Setup Temporal
+        uses: temporalio/setup-temporal@v0
+        with:
+          version: latest
+
+      - name: Start Temporal Server
+        run: |
+          temporal server start-dev --headless &
+          
+          # Wait for Temporal to be ready
+          echo "Waiting for Temporal server to start..."
+          for i in {1..30}; do
+            if temporal operator cluster health 2>/dev/null; then
+              echo "Temporal server is ready"
+              break
+            fi
+            echo "Waiting for Temporal server... ($i/30)"
+            sleep 2
+          done
+          
+          # Final health check
+          temporal operator cluster health
+
+      - name: Setup MinIO (S3-compatible storage)
+        run: |
+          docker run -d \
+            --name minio \
+            -p 9000:9000 \
+            -p 9001:9001 \
+            -e "MINIO_ROOT_USER=minioadmin" \
+            -e "MINIO_ROOT_PASSWORD=minioadmin" \
+            minio/minio server /data --console-address ":9001"
+
+          # Wait for MinIO to be ready
+          sleep 5
+
+          # Install MinIO client
+          wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O mc
+          chmod +x mc
+
+          # Create test bucket using mc client
+          ./mc alias set myminio http://localhost:9000 minioadmin minioadmin
+          ./mc mb myminio/skills || true
+
+      - name: Run database migrations
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+          S3_ENDPOINT: http://localhost:9000
+          S3_BUCKET: skills
+          S3_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          TEMPORAL_SERVER_URL: http://localhost:7233
+        run: |
+          cargo run --bin setup
+
+      - name: Build backend
+        working-directory: ./backend
+        run: cargo build --verbose
+
+      - name: Start API server
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+          S3_ENDPOINT: http://localhost:9000
+          S3_BUCKET: skills
+          S3_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          TEMPORAL_SERVER_URL: http://localhost:7233
+          RUST_LOG: info
+        run: |
+          cargo run --bin api &
+          API_PID=$!
+          echo $API_PID > /tmp/api.pid
+          
+          # Wait for API to be ready
+          echo "Waiting for API server to start..."
+          for i in {1..30}; do
+            if curl -f http://localhost:3000/health 2>/dev/null; then
+              echo "API server is ready"
+              break
+            fi
+            echo "Waiting for API server... ($i/30)"
+            sleep 1
+          done
+
+      - name: Start Worker
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+          S3_ENDPOINT: http://localhost:9000
+          S3_BUCKET: skills
+          S3_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          TEMPORAL_SERVER_URL: http://localhost:7233
+          RUST_LOG: info
+        run: |
+          cargo run --bin worker &
+          WORKER_PID=$!
+          echo $WORKER_PID > /tmp/worker.pid
+          sleep 5
+
+      - name: Run E2E tests
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/skillregistry_test
+          API_URL: http://localhost:3000
+          TEMPORAL_SERVER_URL: http://localhost:7233
+          S3_ENDPOINT: http://localhost:9000
+          RUST_LOG: debug
+        run: |
+          cargo test -p e2e-tests --test e2e -- --ignored --nocapture
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f /tmp/api.pid ]; then
+            kill $(cat /tmp/api.pid) || true
+          fi
+          if [ -f /tmp/worker.pid ]; then
+            kill $(cat /tmp/worker.pid) || true
+          fi
+          docker stop minio || true
+          docker rm minio || true
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-logs
+          path: |
+            backend/target/debug/e2e-*.log
