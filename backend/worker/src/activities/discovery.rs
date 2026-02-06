@@ -4,6 +4,7 @@ use common::entities::{prelude::*, *};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::Arc;
 use temporalio_sdk::ActivityError;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -12,14 +13,20 @@ pub struct DiscoveryResult {
     pub updated_count: u32,
 }
 
-pub struct DiscoveryService;
+pub struct DiscoveryActivities {
+    db: Arc<DatabaseConnection>,
+    github: Arc<dyn GithubApi>,
+}
 
-impl DiscoveryService {
-    pub async fn run(
-        db: &DatabaseConnection,
-        github: &impl GithubApi,
+impl DiscoveryActivities {
+    pub fn new(db: Arc<DatabaseConnection>, github: Arc<dyn GithubApi>) -> Self {
+        Self { db, github }
+    }
+
+    pub async fn discover_repos(
+        &self,
         queries: Vec<String>,
-    ) -> Result<DiscoveryResult> {
+    ) -> Result<DiscoveryResult, ActivityError> {
         tracing::info!("Starting discovery task...");
 
         let mut new_count = 0;
@@ -33,14 +40,14 @@ impl DiscoveryService {
                 || query.contains("path:")
                 || query.contains("extension:")
             {
-                github.search_code(query).await
+                self.github.search_code(query).await
             } else {
                 let q = if !query.contains("sort:") {
                     format!("{} fork:false sort:updated", query)
                 } else {
                     query.to_string()
                 };
-                github.search_repositories(&q).await
+                self.github.search_repositories(&q).await
             };
 
             match repos_result {
@@ -57,7 +64,7 @@ impl DiscoveryService {
                         // Check blacklist
                         let blacklisted = Blacklist::find()
                             .filter(blacklist::Column::RepositoryUrl.eq(&repo.html_url))
-                            .one(db)
+                            .one(&*self.db)
                             .await?;
 
                         if let Some(b) = blacklisted {
@@ -73,7 +80,7 @@ impl DiscoveryService {
                         let existing = SkillRegistry::find()
                             .filter(skill_registry::Column::Name.eq(&repo.name))
                             .filter(skill_registry::Column::Owner.eq(&repo.owner.login))
-                            .one(db)
+                            .one(&*self.db)
                             .await?;
 
                         if let Some(existing_model) = existing {
@@ -82,7 +89,7 @@ impl DiscoveryService {
                             active.stars = Set(repo.stargazers_count);
                             active.updated_at = Set(repo.updated_at.naive_utc());
                             active.last_scanned_at = Set(Some(chrono::Utc::now().naive_utc()));
-                            active.update(db).await?;
+                            active.update(&*self.db).await?;
                             updated_count += 1;
                         } else {
                             // Insert new
@@ -92,13 +99,14 @@ impl DiscoveryService {
                                 name: Set(repo.name.clone()),
                                 url: Set(repo.html_url.clone()),
                                 description: Set(repo.description.clone()),
+                                status: Set("active".to_string()),
                                 stars: Set(repo.stargazers_count),
                                 created_at: Set(repo.created_at.naive_utc()),
                                 updated_at: Set(repo.updated_at.naive_utc()),
                                 last_scanned_at: Set(Some(chrono::Utc::now().naive_utc())),
                                 ..Default::default()
                             };
-                            new_repo.insert(db).await?;
+                            new_repo.insert(&*self.db).await?;
                             new_count += 1;
                             tracing::info!("Discovered new repo: {}", repo_key);
                         }
@@ -120,16 +128,6 @@ impl DiscoveryService {
             updated_count,
         })
     }
-}
-
-// Activity wrapper that takes WorkerContext
-pub async fn discovery_activity_with_ctx(
-    ctx: &crate::WorkerContext,
-    queries: Vec<String>,
-) -> Result<DiscoveryResult, ActivityError> {
-    DiscoveryService::run(ctx.db.as_ref(), ctx.github.as_ref(), queries)
-        .await
-        .map_err(ActivityError::from)
 }
 
 #[cfg(test)]
@@ -187,7 +185,12 @@ mod tests {
             }])
         });
 
-        let res = DiscoveryService::run(&db, &github, vec!["test-query".to_string()]).await?;
+        let discovery = DiscoveryActivities::new(Arc::new(db), Arc::new(github));
+
+        let res = discovery
+            .discover_repos(vec!["test-query".to_string()])
+            .await
+            .map_err(|e| anyhow::anyhow!("{:?}", e))?;
         assert_eq!(res.new_count, 1);
 
         Ok(())

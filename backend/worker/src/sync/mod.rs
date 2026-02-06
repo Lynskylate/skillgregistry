@@ -20,32 +20,68 @@ use std::collections::HashSet;
 
 pub use self::domain::{SnapshotResult, SyncResult};
 
-pub struct SyncService;
+pub struct SyncService {
+    db: sea_orm::DatabaseConnection,
+    s3: std::sync::Arc<dyn Storage>,
+    github: std::sync::Arc<dyn GithubApi>,
+    registry_service: std::sync::Arc<dyn common::services::registry::RegistryService>,
+}
 
 impl SyncService {
-    pub async fn fetch_pending(
-        registry_service: &dyn common::services::registry::RegistryService,
-    ) -> Result<Vec<i32>> {
+    pub fn new(
+        db: sea_orm::DatabaseConnection,
+        s3: std::sync::Arc<dyn Storage>,
+        github: std::sync::Arc<dyn GithubApi>,
+        registry_service: std::sync::Arc<dyn common::services::registry::RegistryService>,
+    ) -> Self {
+        Self {
+            db,
+            s3,
+            github,
+            registry_service,
+        }
+    }
+
+    pub async fn fetch_pending(&self) -> Result<Vec<i32>> {
         let expiry_date = chrono::Utc::now().naive_utc() - chrono::Duration::days(30);
-        registry_service
+        self.registry_service
             .find_all_pending(expiry_date)
             .await
             .map_err(|e| anyhow::anyhow!(e))
     }
 
-    pub async fn process_one(
-        db: &sea_orm::DatabaseConnection,
-        s3: &impl Storage,
-        github: &impl GithubApi,
-        registry_id: i32,
-    ) -> Result<SyncResult> {
+    pub async fn process_one(&self, registry_id: i32) -> Result<SyncResult> {
+        let _ = std::fs::write(
+            "/tmp/worker_debug_process_one.txt",
+            format!("process_one called with registry_id={}\n", registry_id),
+        );
+        eprintln!("[SYNC] process_one called with registry_id={}", registry_id);
+        std::fs::write(
+            "/tmp/worker_debug.txt",
+            format!(
+                "[SYNC] process_one called with registry_id={}\n",
+                registry_id
+            ),
+        )
+        .ok();
+
         let repo = SkillRegistry::find()
             .filter(skill_registry::Column::Id.eq(registry_id))
-            .one(db)
+            .one(&self.db)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Registry entry not found"))?;
 
-        tracing::info!("Processing repo: {}/{}", repo.owner, repo.name);
+        tracing::info!(
+            "Processing repo: {}/{} (id={}, status='{}')",
+            repo.owner,
+            repo.name,
+            repo.id,
+            repo.status
+        );
+        eprintln!(
+            "[SYNC] Processing repo: {}/{} (id={}, status='{}')",
+            repo.owner, repo.name, repo.id, repo.status
+        );
 
         if repo.status == "blacklisted" {
             return Ok(SyncResult {
@@ -56,18 +92,35 @@ impl SyncService {
 
         let is_blacklisted = Blacklist::find()
             .filter(blacklist::Column::RepositoryUrl.eq(&repo.url))
-            .one(db)
+            .one(&self.db)
             .await?
             .is_some();
 
+        tracing::info!(
+            "Blacklist check: url={}, is_blacklisted={}",
+            repo.url,
+            is_blacklisted
+        );
+        eprintln!(
+            "[SYNC] Blacklist check: url={}, is_blacklisted={}",
+            repo.url, is_blacklisted
+        );
+
         if is_blacklisted {
+            tracing::info!("Returning SkippedBlacklisted due to blacklist entry");
             return Ok(SyncResult {
                 status: "SkippedBlacklisted".to_string(),
                 version: None,
             });
         }
 
-        let zip_data = github.download_zipball(&repo.owner, &repo.name).await?;
+        let zip_data = self
+            .github
+            .download_zipball(&repo.owner, &repo.name)
+            .await?;
+        tracing::info!("Downloaded zip: {} bytes", zip_data.len());
+        eprintln!("[SYNC] Downloaded zip: {} bytes", zip_data.len());
+
         let file_map = match zip_to_file_map(&zip_data) {
             Ok(m) => m,
             Err(e) => {
@@ -75,7 +128,7 @@ impl SyncService {
                 active.status = Set("blacklisted".to_string());
                 active.blacklist_reason = Set(Some(format!("Invalid zip archive: {}", e)));
                 active.blacklisted_at = Set(Some(chrono::Utc::now().naive_utc()));
-                active.update(db).await?;
+                active.update(&self.db).await?;
                 return Ok(SyncResult {
                     status: "Blacklisted".to_string(),
                     version: None,
@@ -83,18 +136,20 @@ impl SyncService {
             }
         };
 
-        Self::sync_from_file_map(db, s3, &repo, &file_map).await
+        let result = self.sync_from_file_map(&repo, &file_map).await;
+        eprintln!(
+            "[SYNC] sync_from_file_map result (from zip): status={:?}, version={:?}",
+            result.as_ref().map(|r| &r.status),
+            result.as_ref().map(|r| &r.version)
+        );
+        tracing::info!("sync_from_file_map result (from zip): {:?}", result);
+        result
     }
 
-    pub async fn fetch_repo_snapshot(
-        db: &sea_orm::DatabaseConnection,
-        s3: &impl Storage,
-        github: &impl GithubApi,
-        registry_id: i32,
-    ) -> Result<SnapshotResult> {
+    pub async fn fetch_repo_snapshot(&self, registry_id: i32) -> Result<SnapshotResult> {
         let repo = SkillRegistry::find()
             .filter(skill_registry::Column::Id.eq(registry_id))
-            .one(db)
+            .one(&self.db)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Registry entry not found"))?;
 
@@ -106,7 +161,7 @@ impl SyncService {
 
         let is_blacklisted = Blacklist::find()
             .filter(blacklist::Column::RepositoryUrl.eq(&repo.url))
-            .one(db)
+            .one(&self.db)
             .await?
             .is_some();
 
@@ -116,10 +171,13 @@ impl SyncService {
             });
         }
 
-        let zip_data = github.download_zipball(&repo.owner, &repo.name).await?;
+        let zip_data = self
+            .github
+            .download_zipball(&repo.owner, &repo.name)
+            .await?;
         let zip_hash = format!("{:x}", md5::compute(&zip_data));
         let snapshot_s3_key = format!("repo-snapshots/{}/{}.zip", repo.id, zip_hash);
-        let _ = s3.upload(&snapshot_s3_key, zip_data).await?;
+        let _ = self.s3.upload(&snapshot_s3_key, zip_data).await?;
 
         Ok(SnapshotResult::Snapshot(domain::RepoSnapshotRef {
             registry_id: repo.id,
@@ -132,24 +190,23 @@ impl SyncService {
     }
 
     pub async fn apply_sync_from_snapshot(
-        db: &sea_orm::DatabaseConnection,
-        s3: &impl Storage,
+        &self,
         snapshot: &domain::RepoSnapshotRef,
     ) -> Result<SyncResult> {
-        let zip_data = s3.download(&snapshot.snapshot_s3_key).await?;
+        let zip_data = self.s3.download(&snapshot.snapshot_s3_key).await?;
         let file_map = match zip_to_file_map(&zip_data) {
             Ok(m) => m,
             Err(e) => {
                 let repo = SkillRegistry::find()
                     .filter(skill_registry::Column::Id.eq(snapshot.registry_id))
-                    .one(db)
+                    .one(&self.db)
                     .await?
                     .ok_or_else(|| anyhow::anyhow!("Registry entry not found"))?;
                 let mut active: skill_registry::ActiveModel = repo.clone().into();
                 active.status = Set("blacklisted".to_string());
                 active.blacklist_reason = Set(Some(format!("Invalid zip archive: {}", e)));
                 active.blacklisted_at = Set(Some(chrono::Utc::now().naive_utc()));
-                active.update(db).await?;
+                active.update(&self.db).await?;
                 return Ok(SyncResult {
                     status: "Blacklisted".to_string(),
                     version: None,
@@ -159,16 +216,15 @@ impl SyncService {
 
         let repo = SkillRegistry::find()
             .filter(skill_registry::Column::Id.eq(snapshot.registry_id))
-            .one(db)
+            .one(&self.db)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Registry entry not found"))?;
 
-        Self::sync_from_file_map(db, s3, &repo, &file_map).await
+        self.sync_from_file_map(&repo, &file_map).await
     }
 
     async fn sync_from_file_map(
-        db: &sea_orm::DatabaseConnection,
-        s3: &impl Storage,
+        &self,
         repo: &skill_registry::Model,
         file_map: &std::collections::BTreeMap<String, Vec<u8>>,
     ) -> Result<SyncResult> {
@@ -184,7 +240,7 @@ impl SyncService {
                         "Invalid marketplace.json (JSON parse error): {}",
                         e
                     )));
-                    active.update(db).await?;
+                    active.update(&self.db).await?;
                     return Ok(SyncResult {
                         status: "Blacklisted".to_string(),
                         version: None,
@@ -193,12 +249,13 @@ impl SyncService {
             };
 
             let plugin_outcome =
-                sync_marketplace_plugins(db, s3, repo, file_map, &marketplace_json).await?;
+                sync_marketplace_plugins(&self.db, &*self.s3, repo, file_map, &marketplace_json)
+                    .await?;
             changed |= plugin_outcome.changed;
 
             let skill_outcome = sync_standalone_skills(
-                db,
-                s3,
+                &self.db,
+                &*self.s3,
                 repo,
                 file_map,
                 &plugin_outcome.plugin_root_prefixes,
@@ -210,7 +267,7 @@ impl SyncService {
             let mut active: skill_registry::ActiveModel = repo.clone().into();
             active.status = Set("active".to_string());
             active.repo_type = Set(Some("marketplace".to_string()));
-            active.update(db).await?;
+            active.update(&self.db).await?;
             return Ok(SyncResult {
                 status: if changed {
                     "Updated".to_string()
@@ -222,24 +279,31 @@ impl SyncService {
         }
 
         let skill_outcome =
-            sync_standalone_skills(db, s3, repo, file_map, &HashSet::new(), true).await?;
+            sync_standalone_skills(&self.db, &*self.s3, repo, file_map, &HashSet::new(), true)
+                .await?;
         changed |= skill_outcome.changed;
 
         if !skill_outcome.found_any {
             let mut active: skill_registry::ActiveModel = repo.clone().into();
             active.status = Set("blacklisted".to_string());
             active.blacklist_reason = Set(Some("No valid SKILL.md found".to_string()));
-            active.update(db).await?;
+            active.update(&self.db).await?;
             return Ok(SyncResult {
                 status: "Blacklisted".to_string(),
                 version: None,
             });
         }
 
+        eprintln!(
+            "[SYNC] Before update - repo.status='{}', repo.id={}",
+            repo.status, repo.id
+        );
         let mut active: skill_registry::ActiveModel = repo.clone().into();
+        eprintln!("[SYNC] After clone - active.status={:?}", active.status);
         active.status = Set("active".to_string());
         active.repo_type = Set(Some("skill".to_string()));
-        active.update(db).await?;
+        eprintln!("[SYNC] After setting - active.status={:?}", active.status);
+        active.update(&self.db).await?;
         Ok(SyncResult {
             status: if changed {
                 "Updated".to_string()
@@ -337,7 +401,14 @@ mod tests {
         };
         blacklist_entry.insert(&db).await?;
 
-        let pending = SyncService::fetch_pending(services.registry_service.as_ref()).await?;
+        let sync_service = SyncService::new(
+            db.clone(),
+            std::sync::Arc::new(crate::ports::MockStorage::new()),
+            std::sync::Arc::new(crate::ports::MockGithubApi::new()),
+            services.registry_service,
+        );
+
+        let pending = sync_service.fetch_pending().await?;
         assert!(
             !pending.is_empty(),
             "Repo should be in pending since blacklist expired"

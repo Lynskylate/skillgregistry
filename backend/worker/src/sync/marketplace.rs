@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub async fn sync_marketplace_plugins(
     db: &sea_orm::DatabaseConnection,
-    s3: &impl Storage,
+    s3: &dyn Storage,
     repo: &skill_registry::Model,
     all_files: &BTreeMap<String, Vec<u8>>,
     marketplace: &Value,
@@ -101,8 +101,22 @@ pub async fn sync_marketplace_plugins(
         }
 
         let plugin_files = subtree_file_map(all_files, &plugin_root);
-        let hash_string = compute_hash(&plugin_files);
-        let derived_patch = u32::from_str_radix(&hash_string[..8], 16).unwrap_or(0);
+        let content_hash = compute_hash(&plugin_files);
+        let plugin_prefix = plugin_name.trim_matches('/');
+        let mut prefixed_plugin_files = BTreeMap::new();
+        for (path, bytes) in plugin_files {
+            if path.is_empty() {
+                continue;
+            }
+            let prefixed_path = if plugin_prefix.is_empty() {
+                path
+            } else {
+                format!("{}/{}", plugin_prefix, path.trim_start_matches('/'))
+            };
+            prefixed_plugin_files.insert(prefixed_path, bytes);
+        }
+        let package_hash = compute_hash(&prefixed_plugin_files);
+        let derived_patch = u32::from_str_radix(&content_hash[..8], 16).unwrap_or(0);
         let version_str = json_string(manifest.get("version"))
             .or_else(|| json_string(entry.get("version")))
             .unwrap_or_else(|| format!("0.0.{}", derived_patch));
@@ -116,14 +130,14 @@ pub async fn sync_marketplace_plugins(
         let unchanged = existing_version
             .as_ref()
             .and_then(|v| v.file_hash.as_ref())
-            .map(|h| h == &hash_string)
+            .map(|h| h == &package_hash)
             .unwrap_or(false);
 
         if unchanged {
             continue;
         }
 
-        let new_zip_buffer = package_skill(&plugin_files)?;
+        let new_zip_buffer = package_skill(&prefixed_plugin_files)?;
         let s3_key = format!("plugins/{}/{}.zip", plugin_name, version_str);
         let oss_url = s3.upload(&s3_key, new_zip_buffer).await?;
 
@@ -142,7 +156,7 @@ pub async fn sync_marketplace_plugins(
             active.readme_content = Set(None);
             active.s3_key = Set(Some(s3_key));
             active.oss_url = Set(Some(oss_url));
-            active.file_hash = Set(Some(hash_string));
+            active.file_hash = Set(Some(package_hash));
             active.metadata = Set(Some(metadata));
             active.update(&txn).await?.id
         } else {
@@ -153,7 +167,7 @@ pub async fn sync_marketplace_plugins(
                 readme_content: Set(None),
                 s3_key: Set(Some(s3_key)),
                 oss_url: Set(Some(oss_url)),
-                file_hash: Set(Some(hash_string)),
+                file_hash: Set(Some(package_hash)),
                 metadata: Set(Some(metadata)),
                 created_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()

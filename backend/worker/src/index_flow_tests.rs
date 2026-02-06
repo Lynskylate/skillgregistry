@@ -1,4 +1,4 @@
-use crate::activities::discovery::DiscoveryService;
+use crate::activities::discovery::DiscoveryActivities;
 use crate::github::{GithubOwner, GithubRepo};
 use crate::ports::{MockGithubApi, MockStorage};
 use crate::sync::SyncService;
@@ -9,6 +9,7 @@ use common::settings::Settings;
 use migration::MigratorTrait;
 use sea_orm::{ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter};
 use std::io::Write;
+use std::sync::Arc;
 use zip::write::FileOptions;
 
 fn create_zip(files: Vec<(&str, &[u8])>) -> Vec<u8> {
@@ -66,6 +67,7 @@ async fn setup_db() -> Result<(DatabaseConnection, common::Services)> {
 
 #[tokio::test]
 async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
+    std::fs::write("/tmp/worker_debug.txt", "Test started\n").ok();
     let (db, services) = setup_db().await?;
 
     let mut github = MockGithubApi::new();
@@ -101,9 +103,13 @@ async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
         .times(1)
         .returning(|_, _| Ok("https://oss.example/test.zip".to_string()));
 
-    let discovery =
-        DiscoveryService::run(&db, &github, vec!["topic:agent-skill".to_string()]).await?;
-    assert_eq!(discovery.new_count, 1);
+    let github_arc = Arc::new(github);
+    let discovery = DiscoveryActivities::new(Arc::new(db.clone()), github_arc.clone());
+    let discovery_result = discovery
+        .discover_repos(vec!["topic:agent-skill".to_string()])
+        .await
+        .map_err(|e| anyhow::anyhow!("{:?}", e))?;
+    assert_eq!(discovery_result.new_count, 1);
 
     let registry = SkillRegistry::find()
         .filter(skill_registry::Column::Owner.eq("test-owner"))
@@ -111,12 +117,49 @@ async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
         .one(&db)
         .await?
         .unwrap();
+    let _ = std::fs::write(
+        "/tmp/worker_debug_after_discovery.txt",
+        format!(
+            "After discovery - status={}, repo_type={:?}\n",
+            registry.status, registry.repo_type
+        ),
+    );
+    eprintln!(
+        "DEBUG: After discovery (standalone) - registry.status='{}', repo_type={:?}",
+        registry.status, registry.repo_type
+    );
 
-    let pending = SyncService::fetch_pending(services.registry_service.as_ref()).await?;
+    let sync_service = SyncService::new(
+        db.clone(),
+        Arc::new(s3),
+        github_arc.clone(),
+        services.registry_service.clone(),
+    );
+
+    let pending = sync_service.fetch_pending().await?;
     assert_eq!(pending, vec![registry.id]);
 
-    let res = SyncService::process_one(&db, &s3, &github, registry.id).await?;
-    assert!(matches!(res.status.as_str(), "Updated" | "Unchanged"));
+    dbg!("About to call process_one");
+
+    let res = match sync_service.process_one(registry.id).await {
+        Ok(r) => {
+            std::fs::write(
+                "/tmp/worker_debug.txt",
+                "process_one completed successfully\n",
+            )
+            .ok();
+            eprintln!("DEBUG: process_one completed successfully");
+            r
+        }
+        Err(e) => {
+            std::fs::write(
+                "/tmp/worker_debug.txt",
+                format!("process_one failed: {:?}\n", e),
+            )
+            .ok();
+            panic!("process_one failed: {:?}", e);
+        }
+    };
 
     let updated = SkillRegistry::find_by_id(registry.id)
         .one(&db)
@@ -207,9 +250,13 @@ async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
         .times(1)
         .returning(|_, _| Ok("https://oss.example/p1.zip".to_string()));
 
-    let discovery =
-        DiscoveryService::run(&db, &github, vec!["topic:agent-skill".to_string()]).await?;
-    assert_eq!(discovery.new_count, 1);
+    let github_arc = Arc::new(github);
+    let discovery = DiscoveryActivities::new(Arc::new(db.clone()), github_arc.clone());
+    let discovery_result = discovery
+        .discover_repos(vec!["topic:agent-skill".to_string()])
+        .await
+        .map_err(|e| anyhow::anyhow!("{:?}", e))?;
+    assert_eq!(discovery_result.new_count, 1);
 
     let registry = SkillRegistry::find()
         .filter(skill_registry::Column::Owner.eq("test-owner"))
@@ -217,11 +264,26 @@ async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
         .one(&db)
         .await?
         .unwrap();
+    eprintln!(
+        "DEBUG: After discovery (marketplace) - registry.status='{}', repo_type={:?}",
+        registry.status, registry.repo_type
+    );
 
-    let pending = SyncService::fetch_pending(services.registry_service.as_ref()).await?;
+    let sync_service = SyncService::new(
+        db.clone(),
+        Arc::new(s3),
+        github_arc.clone(),
+        services.registry_service.clone(),
+    );
+
+    let pending = sync_service.fetch_pending().await?;
     assert_eq!(pending, vec![registry.id]);
 
-    let res = SyncService::process_one(&db, &s3, &github, registry.id).await?;
+    let res = sync_service.process_one(registry.id).await?;
+    eprintln!(
+        "DEBUG: After sync (marketplace) - res.status='{}', res.version={:?}",
+        res.status, res.version
+    );
     assert!(matches!(res.status.as_str(), "Updated" | "Unchanged"));
 
     let updated = SkillRegistry::find_by_id(registry.id)

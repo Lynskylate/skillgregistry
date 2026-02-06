@@ -91,6 +91,21 @@ async fn main() -> anyhow::Result<()> {
         settings: Arc::clone(&settings),
     });
 
+    // Create service instances
+    let sync_service = Arc::new(sync::SyncService::new(
+        (*ctx.db).clone(),
+        ctx.services.s3.clone(),
+        ctx.github.clone(),
+        ctx.services.registry_service.clone(),
+    ));
+
+    let discovery = Arc::new(activities::discovery::DiscoveryActivities::new(
+        ctx.db.clone(),
+        ctx.github.clone(),
+    ));
+
+    let sync_activities = Arc::new(activities::sync::SyncActivities::new(sync_service.clone()));
+
     // Temporal Setup
     let server_url = settings.temporal.server_url.clone();
     let task_queue = settings.temporal.task_queue.as_str();
@@ -121,43 +136,37 @@ async fn main() -> anyhow::Result<()> {
     let core_worker = init_worker(&runtime, worker_config, client)?;
     let mut worker = Worker::new_from_core(Arc::new(core_worker), task_queue);
 
-    // Register Activities with closures capturing WorkerContext
-    let ctx_clone = Arc::clone(&ctx);
+    // Register Activities
+    let discovery_clone = Arc::clone(&discovery);
     worker.register_activity("discovery_activity", move |_ctx, queries| {
-        let ctx = Arc::clone(&ctx_clone);
-        async move { activities::discovery::discovery_activity_with_ctx(&ctx, queries).await }
+        let discovery = Arc::clone(&discovery_clone);
+        async move { discovery.discover_repos(queries).await }
     });
 
-    let ctx_clone = Arc::clone(&ctx);
-    worker.register_activity("fetch_pending_skills_activity", move |_ctx, _input| {
-        let ctx = Arc::clone(&ctx_clone);
-        async move { activities::sync::fetch_pending_skills_activity_with_ctx(&ctx, _input).await }
+    let sync_clone = Arc::clone(&sync_activities);
+    worker.register_activity("fetch_pending_skills_activity", move |_ctx, input| {
+        let sync = Arc::clone(&sync_clone);
+        async move { sync.fetch_pending_skills(input).await }
     });
 
-    let ctx_clone = Arc::clone(&ctx);
+    let sync_clone = Arc::clone(&sync_activities);
     worker.register_activity("sync_single_skill_activity", move |_ctx, registry_id| {
-        let ctx = Arc::clone(&ctx_clone);
-        async move {
-            activities::sync::sync_single_skill_activity_with_ctx(&ctx, registry_id).await
-        }
+        let sync = Arc::clone(&sync_clone);
+        async move { sync.sync_single_skill(registry_id).await }
     });
 
-    let ctx_clone = Arc::clone(&ctx);
+    let sync_clone = Arc::clone(&sync_activities);
     worker.register_activity("fetch_repo_snapshot_activity", move |_ctx, registry_id| {
-        let ctx = Arc::clone(&ctx_clone);
-        async move {
-            activities::sync::fetch_repo_snapshot_activity_with_ctx(&ctx, registry_id).await
-        }
+        let sync = Arc::clone(&sync_clone);
+        async move { sync.fetch_repo_snapshot(registry_id).await }
     });
 
-    let ctx_clone = Arc::clone(&ctx);
+    let sync_clone = Arc::clone(&sync_activities);
     worker.register_activity(
         "apply_sync_from_snapshot_activity",
         move |_ctx, snapshot| {
-            let ctx = Arc::clone(&ctx_clone);
-            async move {
-                activities::sync::apply_sync_from_snapshot_activity_with_ctx(&ctx, snapshot).await
-            }
+            let sync = Arc::clone(&sync_clone);
+            async move { sync.apply_sync_from_snapshot(snapshot).await }
         },
     );
 
