@@ -14,6 +14,9 @@ jobs:
   e2e-tests:
     name: E2E Discovery + Upload
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
 
     services:
       rustfs:
@@ -90,7 +93,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: rustfsadmin
           TEMPORAL_SERVER_URL: http://localhost:7233
           SKILLREGISTRY_TEMPORAL_TASK_QUEUE: skill-registry-queue
-          GITHUB_TOKEN: ${{ secrets.E2E_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUST_LOG: info
         run: |
           cargo run --bin worker > /tmp/worker.log 2>&1 &
@@ -110,7 +113,7 @@ jobs:
           S3_FORCE_PATH_STYLE: "true"
           AWS_ACCESS_KEY_ID: rustfsadmin
           AWS_SECRET_ACCESS_KEY: rustfsadmin
-          GITHUB_TOKEN: ${{ secrets.E2E_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           E2E_DISCOVERY_QUERY: repo:anthropics/skills
           E2E_TARGET_OWNER: anthropics
           E2E_TARGET_REPO: skills
