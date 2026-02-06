@@ -9,8 +9,39 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
+                    .table(DiscoveryRegistries::Table)
+                    .col(pk_auto(DiscoveryRegistries::Id))
+                    .col(string_len(DiscoveryRegistries::Platform, 32))
+                    .col(text(DiscoveryRegistries::Token))
+                    .col(text(DiscoveryRegistries::QueriesJson))
+                    .col(big_integer(DiscoveryRegistries::ScheduleIntervalSeconds))
+                    .col(string_len_null(DiscoveryRegistries::LastHealthStatus, 32))
+                    .col(text_null(DiscoveryRegistries::LastHealthMessage))
+                    .col(date_time_null(DiscoveryRegistries::LastHealthCheckedAt))
+                    .col(date_time_null(DiscoveryRegistries::LastRunAt))
+                    .col(date_time_null(DiscoveryRegistries::NextRunAt))
+                    .col(date_time(DiscoveryRegistries::CreatedAt))
+                    .col(date_time(DiscoveryRegistries::UpdatedAt))
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_discovery_registries_next_run_at")
+                    .table(DiscoveryRegistries::Table)
+                    .col(DiscoveryRegistries::NextRunAt)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
                     .table(SkillRegistry::Table)
                     .col(pk_auto(SkillRegistry::Id))
+                    .col(integer_null(SkillRegistry::DiscoveryRegistryId))
                     .col(string_len(SkillRegistry::Platform, 256))
                     .col(string(SkillRegistry::Owner))
                     .col(string(SkillRegistry::Name))
@@ -24,6 +55,23 @@ impl MigrationTrait for Migration {
                     .col(date_time_null(SkillRegistry::LastScannedAt))
                     .col(date_time(SkillRegistry::CreatedAt))
                     .col(date_time(SkillRegistry::UpdatedAt))
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_skill_registry_discovery_registry_id")
+                            .from(SkillRegistry::Table, SkillRegistry::DiscoveryRegistryId)
+                            .to(DiscoveryRegistries::Table, DiscoveryRegistries::Id)
+                            .on_delete(ForeignKeyAction::SetNull),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_skill_registry_discovery_registry_id")
+                    .table(SkillRegistry::Table)
+                    .col(SkillRegistry::DiscoveryRegistryId)
                     .to_owned(),
             )
             .await?;
@@ -359,6 +407,22 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_skill_registry_discovery_registry_id")
+                    .table(SkillRegistry::Table)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_discovery_registries_next_run_at")
+                    .table(DiscoveryRegistries::Table)
+                    .to_owned(),
+            )
+            .await?;
+        manager
             .drop_table(Table::drop().table(TaskLogs::Table).to_owned())
             .await?;
         manager
@@ -406,14 +470,35 @@ impl MigrationTrait for Migration {
         manager
             .drop_table(Table::drop().table(SkillRegistry::Table).to_owned())
             .await?;
+        manager
+            .drop_table(Table::drop().table(DiscoveryRegistries::Table).to_owned())
+            .await?;
         Ok(())
     }
+}
+
+#[derive(DeriveIden)]
+enum DiscoveryRegistries {
+    Table,
+    Id,
+    Platform,
+    Token,
+    QueriesJson,
+    ScheduleIntervalSeconds,
+    LastHealthStatus,
+    LastHealthMessage,
+    LastHealthCheckedAt,
+    LastRunAt,
+    NextRunAt,
+    CreatedAt,
+    UpdatedAt,
 }
 
 #[derive(DeriveIden)]
 enum SkillRegistry {
     Table,
     Id,
+    DiscoveryRegistryId,
     Platform,
     Owner,
     Name,

@@ -1,5 +1,6 @@
 pub mod auth_identities;
 pub mod blacklist;
+pub mod discovery_registries;
 pub mod local_credentials;
 pub mod org_memberships;
 pub mod organizations;

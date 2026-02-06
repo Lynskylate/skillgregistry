@@ -1,11 +1,12 @@
 use crate::github::GithubClient;
 use crate::repositories::{
-    plugins::PluginRepositoryImpl, registry::RegistryRepositoryImpl, skills::SkillRepositoryImpl,
+    discovery_registries::DiscoveryRegistryRepositoryImpl, plugins::PluginRepositoryImpl,
+    registry::RegistryRepositoryImpl, skills::SkillRepositoryImpl,
 };
 use crate::s3::S3Service;
 use crate::services::{
-    github::GithubService, plugins::PluginServiceImpl, registry::RegistryServiceImpl,
-    skills::SkillServiceImpl,
+    discovery_registries::DiscoveryRegistryServiceImpl, github::GithubService,
+    plugins::PluginServiceImpl, registry::RegistryServiceImpl, skills::SkillServiceImpl,
 };
 use crate::settings::{S3Settings, Settings};
 use sea_orm::DatabaseConnection;
@@ -16,6 +17,8 @@ pub struct Repositories {
     pub skill_repo: Arc<dyn crate::repositories::skills::SkillRepository>,
     pub plugin_repo: Arc<dyn crate::repositories::plugins::PluginRepository>,
     pub registry_repo: Arc<dyn crate::repositories::registry::RegistryRepository>,
+    pub discovery_registry_repo:
+        Arc<dyn crate::repositories::discovery_registries::DiscoveryRegistryRepository>,
 }
 
 #[derive(Clone)]
@@ -23,6 +26,8 @@ pub struct Services {
     pub skill_service: Arc<dyn crate::services::skills::SkillService>,
     pub plugin_service: Arc<dyn crate::services::plugins::PluginService>,
     pub registry_service: Arc<dyn crate::services::registry::RegistryService>,
+    pub discovery_registry_service:
+        Arc<dyn crate::services::discovery_registries::DiscoveryRegistryService>,
     pub github_service: Arc<dyn GithubService>,
     pub s3: Arc<S3Service>,
 }
@@ -32,6 +37,7 @@ pub fn build_repositories(db: Arc<DatabaseConnection>) -> Repositories {
         skill_repo: Arc::new(SkillRepositoryImpl::new(db.clone())),
         plugin_repo: Arc::new(PluginRepositoryImpl::new(db.clone())),
         registry_repo: Arc::new(RegistryRepositoryImpl::new(db.clone())),
+        discovery_registry_repo: Arc::new(DiscoveryRegistryRepositoryImpl::new(db.clone())),
     }
 }
 
@@ -53,6 +59,10 @@ pub async fn build_services(repos: &Repositories, settings: &Settings) -> Servic
 
     let registry_service = Arc::new(RegistryServiceImpl::new(repos.registry_repo.clone()));
 
+    let discovery_registry_service = Arc::new(DiscoveryRegistryServiceImpl::new(
+        repos.discovery_registry_repo.clone(),
+    ));
+
     let github_service = build_github_service(
         settings.github.token.clone(),
         settings.github.api_url.clone(),
@@ -64,6 +74,7 @@ pub async fn build_services(repos: &Repositories, settings: &Settings) -> Servic
         skill_service,
         plugin_service,
         registry_service,
+        discovery_registry_service,
         github_service,
         s3,
     }

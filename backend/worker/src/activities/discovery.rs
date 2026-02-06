@@ -11,32 +11,107 @@ use temporalio_sdk::ActivityError;
 pub struct DiscoveryResult {
     pub new_count: u32,
     pub updated_count: u32,
+    pub touched_repo_ids: Vec<i32>,
 }
 
 pub struct DiscoveryActivities {
     db: Arc<DatabaseConnection>,
     github: Arc<dyn GithubApi>,
+    discovery_registry_service:
+        Option<Arc<dyn common::services::discovery_registries::DiscoveryRegistryService>>,
+    github_api_url: String,
 }
 
 impl DiscoveryActivities {
     pub fn new(db: Arc<DatabaseConnection>, github: Arc<dyn GithubApi>) -> Self {
-        Self { db, github }
+        Self {
+            db,
+            github,
+            discovery_registry_service: None,
+            github_api_url: "https://api.github.com".to_string(),
+        }
+    }
+
+    pub fn with_registry_service(
+        mut self,
+        discovery_registry_service: Arc<
+            dyn common::services::discovery_registries::DiscoveryRegistryService,
+        >,
+        github_api_url: String,
+    ) -> Self {
+        self.discovery_registry_service = Some(discovery_registry_service);
+        self.github_api_url = github_api_url;
+        self
     }
 
     pub async fn discover_repos(
         &self,
         queries: Vec<String>,
     ) -> Result<DiscoveryResult, ActivityError> {
-        self.discover_repos_inner(queries)
+        self.discover_repos_inner(None, queries, self.github.as_ref())
             .await
             .map_err(ActivityError::from)
     }
 
-    async fn discover_repos_inner(&self, queries: Vec<String>) -> Result<DiscoveryResult> {
+    pub async fn fetch_due_registry_ids(&self) -> Result<Vec<i32>, ActivityError> {
+        let Some(service) = self.discovery_registry_service.as_ref() else {
+            return Err(ActivityError::from(anyhow::anyhow!(
+                "discovery registry service is not configured"
+            )));
+        };
+
+        let due = service
+            .find_due(chrono::Utc::now().naive_utc())
+            .await
+            .map_err(ActivityError::from)?;
+        Ok(due.into_iter().map(|r| r.id).collect())
+    }
+
+    pub async fn run_registry_discovery(
+        &self,
+        registry_id: i32,
+    ) -> Result<DiscoveryResult, ActivityError> {
+        let Some(service) = self.discovery_registry_service.as_ref() else {
+            return Err(ActivityError::from(anyhow::anyhow!(
+                "discovery registry service is not configured"
+            )));
+        };
+
+        let config = service
+            .find_by_id(registry_id)
+            .await
+            .map_err(ActivityError::from)?
+            .ok_or_else(|| ActivityError::from(anyhow::anyhow!("registry not found")))?;
+
+        let github =
+            crate::github::GithubClient::new(Some(config.token), self.github_api_url.clone());
+        let result = self
+            .discover_repos_inner(Some(registry_id), config.queries, &github)
+            .await
+            .map_err(ActivityError::from)?;
+
+        let now = chrono::Utc::now().naive_utc();
+        let interval = std::cmp::max(config.schedule_interval_seconds, 60);
+        let next_run_at = now + chrono::Duration::seconds(interval);
+        service
+            .mark_run(registry_id, now, next_run_at)
+            .await
+            .map_err(ActivityError::from)?;
+
+        Ok(result)
+    }
+
+    async fn discover_repos_inner(
+        &self,
+        discovery_registry_id: Option<i32>,
+        queries: Vec<String>,
+        github: &dyn GithubApi,
+    ) -> Result<DiscoveryResult> {
         tracing::info!("Starting discovery task...");
 
         let mut new_count = 0;
         let mut updated_count = 0;
+        let mut touched_repo_ids = Vec::new();
         let mut processed_repos = HashSet::new();
 
         for query in &queries {
@@ -46,14 +121,14 @@ impl DiscoveryActivities {
                 || query.contains("path:")
                 || query.contains("extension:")
             {
-                self.github.search_code(query).await
+                github.search_code(query).await
             } else {
                 let q = if !query.contains("sort:") {
                     format!("{} fork:false sort:updated", query)
                 } else {
                     query.to_string()
                 };
-                self.github.search_repositories(&q).await
+                github.search_repositories(&q).await
             };
 
             match repos_result {
@@ -95,11 +170,16 @@ impl DiscoveryActivities {
                             active.stars = Set(repo.stargazers_count);
                             active.updated_at = Set(repo.updated_at.naive_utc());
                             active.last_scanned_at = Set(Some(chrono::Utc::now().naive_utc()));
-                            active.update(&*self.db).await?;
+                            if let Some(id) = discovery_registry_id {
+                                active.discovery_registry_id = Set(Some(id));
+                            }
+                            let updated = active.update(&*self.db).await?;
                             updated_count += 1;
+                            touched_repo_ids.push(updated.id);
                         } else {
                             // Insert new
                             let new_repo = skill_registry::ActiveModel {
+                                discovery_registry_id: Set(discovery_registry_id),
                                 platform: Set(skill_registry::Platform::Github),
                                 owner: Set(repo.owner.login.clone()),
                                 name: Set(repo.name.clone()),
@@ -112,8 +192,9 @@ impl DiscoveryActivities {
                                 last_scanned_at: Set(Some(chrono::Utc::now().naive_utc())),
                                 ..Default::default()
                             };
-                            new_repo.insert(&*self.db).await?;
+                            let inserted = new_repo.insert(&*self.db).await?;
                             new_count += 1;
+                            touched_repo_ids.push(inserted.id);
                             tracing::info!("Discovered new repo: {}", repo_key);
                         }
                     }
@@ -132,6 +213,7 @@ impl DiscoveryActivities {
         Ok(DiscoveryResult {
             new_count,
             updated_count,
+            touched_repo_ids,
         })
     }
 }
@@ -154,6 +236,7 @@ mod tests {
                 vec![], // Existence check
                 vec![skill_registry::Model {
                     id: 1,
+                    discovery_registry_id: None,
                     platform: skill_registry::Platform::Github,
                     owner: "test-owner".to_string(),
                     name: "test-repo".to_string(),

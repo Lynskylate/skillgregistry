@@ -1,5 +1,6 @@
 pub use super::auth_identities::Entity as AuthIdentities;
 pub use super::blacklist::Entity as Blacklist;
+pub use super::discovery_registries::Entity as DiscoveryRegistries;
 pub use super::local_credentials::Entity as LocalCredentials;
 pub use super::org_memberships::Entity as OrgMemberships;
 pub use super::organizations::Entity as Organizations;

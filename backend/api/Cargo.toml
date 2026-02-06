@@ -28,6 +28,11 @@ url = "2.5"
 base64 = "0.22"
 async-trait = "0.1"
 
+# Temporal dependencies (used to trigger workflows from admin APIs)
+temporalio-client = { git = "https://github.com/temporalio/sdk-core", rev = "f837d73ec1908679573ced8734e9a778f89956aa" }
+temporalio-sdk-core = { git = "https://github.com/temporalio/sdk-core", rev = "f837d73ec1908679573ced8734e9a778f89956aa" }
+temporalio-common = { git = "https://github.com/temporalio/sdk-core", rev = "f837d73ec1908679573ced8734e9a778f89956aa" }
+
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"

@@ -7,8 +7,6 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
       POSTGRES_DB: skillregistry
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -18,9 +16,6 @@ services:
   rustfs:
     image: rustfs/rustfs:latest
     container_name: rustfs
-    ports:
-      - "9000:9000"
-      - "9001:9001"
     volumes:
       - rustfs_data:/data
     # Assuming default credentials are rustfsadmin/rustfsadmin based on docs
@@ -34,9 +29,6 @@ services:
   temporal:
     image: temporalio/temporal:latest
     container_name: temporal
-    ports:
-      - 7233:7233
-      - 8233:8233
     command: server start-dev --ip 0.0.0.0 --db-filename /tmp/temporal.db
 
   skillregistry-backend:
@@ -56,8 +48,6 @@ services:
       - AWS_SECRET_ACCESS_KEY=rustfsadmin
       - TEMPORAL_SERVER_URL=http://temporal:7233
       - RUST_LOG=info
-    ports:
-      - "3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,6 +104,16 @@ services:
       rustfs:
         condition: service_started
       temporal:
+        condition: service_started
+
+  skillregistry-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      skillregistry-backend:
         condition: service_started
 
 volumes:

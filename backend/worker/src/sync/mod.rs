@@ -9,6 +9,7 @@ use self::marketplace::sync_marketplace_plugins;
 use self::standalone::sync_standalone_skills;
 use crate::ports::{GithubApi, Storage};
 use anyhow::Result;
+use common::domain::archive;
 use common::entities::{
     blacklist,
     prelude::{Blacklist, SkillRegistry},
@@ -25,6 +26,8 @@ pub struct SyncService {
     s3: std::sync::Arc<dyn Storage>,
     github: std::sync::Arc<dyn GithubApi>,
     registry_service: std::sync::Arc<dyn common::services::registry::RegistryService>,
+    discovery_registry_service:
+        std::sync::Arc<dyn common::services::discovery_registries::DiscoveryRegistryService>,
 }
 
 impl SyncService {
@@ -33,12 +36,16 @@ impl SyncService {
         s3: std::sync::Arc<dyn Storage>,
         github: std::sync::Arc<dyn GithubApi>,
         registry_service: std::sync::Arc<dyn common::services::registry::RegistryService>,
+        discovery_registry_service: std::sync::Arc<
+            dyn common::services::discovery_registries::DiscoveryRegistryService,
+        >,
     ) -> Self {
         Self {
             db,
             s3,
             github,
             registry_service,
+            discovery_registry_service,
         }
     }
 
@@ -94,29 +101,14 @@ impl SyncService {
             });
         }
 
-        let zip_data = self
+        let token = self.resolve_repo_token(&repo).await?;
+        let file_map = self
             .github
-            .download_zipball(&repo.owner, &repo.name)
+            .clone_repository_files(&repo.owner, &repo.name, token)
             .await?;
-        tracing::info!("Downloaded zip: {} bytes", zip_data.len());
-
-        let file_map = match zip_to_file_map(&zip_data) {
-            Ok(m) => m,
-            Err(e) => {
-                let mut active: skill_registry::ActiveModel = repo.clone().into();
-                active.status = Set("blacklisted".to_string());
-                active.blacklist_reason = Set(Some(format!("Invalid zip archive: {}", e)));
-                active.blacklisted_at = Set(Some(chrono::Utc::now().naive_utc()));
-                active.update(&self.db).await?;
-                return Ok(SyncResult {
-                    status: "Blacklisted".to_string(),
-                    version: None,
-                });
-            }
-        };
 
         let result = self.sync_from_file_map(&repo, &file_map).await;
-        tracing::info!("sync_from_file_map result (from zip): {:?}", result);
+        tracing::info!("sync_from_file_map result (from git clone): {:?}", result);
         result
     }
 
@@ -145,10 +137,12 @@ impl SyncService {
             });
         }
 
-        let zip_data = self
+        let token = self.resolve_repo_token(&repo).await?;
+        let file_map = self
             .github
-            .download_zipball(&repo.owner, &repo.name)
+            .clone_repository_files(&repo.owner, &repo.name, token)
             .await?;
+        let zip_data = archive::package_zip(&file_map)?;
         let zip_hash = format!("{:x}", md5::compute(&zip_data));
         let snapshot_s3_key = format!("repo-snapshots/{}/{}.zip", repo.id, zip_hash);
         let _ = self.s3.upload(&snapshot_s3_key, zip_data).await?;
@@ -161,6 +155,20 @@ impl SyncService {
             zip_hash,
             snapshot_s3_key,
         }))
+    }
+
+    async fn resolve_repo_token(&self, repo: &skill_registry::Model) -> Result<Option<String>> {
+        let Some(discovery_registry_id) = repo.discovery_registry_id else {
+            return Ok(None);
+        };
+
+        let cfg = self
+            .discovery_registry_service
+            .find_by_id(discovery_registry_id)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        Ok(cfg.map(|c| c.token))
     }
 
     pub async fn apply_sync_from_snapshot(
@@ -375,6 +383,7 @@ mod tests {
             std::sync::Arc::new(crate::ports::MockStorage::new()),
             std::sync::Arc::new(crate::ports::MockGithubApi::new()),
             services.registry_service,
+            services.discovery_registry_service,
         );
 
         let pending = sync_service.fetch_pending().await?;

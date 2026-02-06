@@ -5,13 +5,14 @@ use argon2::{
 };
 use aws_sdk_s3::config::{Credentials, SharedCredentialsProvider};
 use chrono::Utc;
-use common::entities::prelude::Users;
-use common::entities::{auth_identities, local_credentials, users};
+use common::entities::prelude::{DiscoveryRegistries, Users};
+use common::entities::{auth_identities, discovery_registries, local_credentials, users};
 use common::settings::Settings;
 use migration::{Migrator, MigratorTrait};
 use rand::rngs::OsRng;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter, Set,
+    ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, PaginatorTrait,
+    QueryFilter, Set,
 };
 use std::str::FromStr;
 use std::time::Duration;
@@ -39,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Migrations applied.");
 
     seed_admin(&db, &settings).await?;
+    seed_default_discovery_registry(&db, &settings).await?;
 
     // 3. S3 Setup
     setup_s3(&settings).await?;
@@ -152,6 +154,67 @@ async fn seed_admin(db: &DatabaseConnection, settings: &Settings) -> anyhow::Res
     .insert(db)
     .await?;
 
+    Ok(())
+}
+
+async fn seed_default_discovery_registry(
+    db: &DatabaseConnection,
+    settings: &Settings,
+) -> anyhow::Result<()> {
+    if DiscoveryRegistries::find().count(db).await? > 0 {
+        return Ok(());
+    }
+
+    let Some(token) = settings
+        .github
+        .token
+        .as_ref()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    else {
+        tracing::warn!(
+            "Skipping default discovery registry bootstrap because github.token is not configured"
+        );
+        return Ok(());
+    };
+
+    let queries: Vec<String> = settings
+        .github
+        .search_keywords
+        .split(',')
+        .map(|q| q.trim().to_string())
+        .filter(|q| !q.is_empty())
+        .collect();
+
+    if queries.is_empty() {
+        tracing::warn!(
+            "Skipping default discovery registry bootstrap because github.search_keywords is empty"
+        );
+        return Ok(());
+    }
+
+    let now = Utc::now().naive_utc();
+    discovery_registries::ActiveModel {
+        platform: Set(discovery_registries::Platform::Github),
+        token: Set(token),
+        queries_json: Set(serde_json::to_string(&queries)?),
+        schedule_interval_seconds: Set(std::cmp::max(
+            settings.worker.scan_interval_seconds as i64,
+            60,
+        )),
+        last_health_status: Set(None),
+        last_health_message: Set(None),
+        last_health_checked_at: Set(None),
+        last_run_at: Set(None),
+        next_run_at: Set(Some(now)),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    }
+    .insert(db)
+    .await?;
+
+    tracing::info!("Bootstrapped default discovery registry from legacy github settings");
     Ok(())
 }
 
@@ -288,10 +351,10 @@ async fn setup_temporal(settings: &Settings) -> anyhow::Result<()> {
 
     tracing::info!("Temporal connected. Registering Schedules/Workflows...");
 
-    // Start Discovery Workflow (Run every 1 hour)
+    // Start Discovery Workflow (Run every 1 minute)
     let discovery_id = "discovery-periodic";
     let opts = WorkflowOptions {
-        cron_schedule: Some("0 * * * *".to_string()), // Every hour
+        cron_schedule: Some("* * * * *".to_string()),
         ..Default::default()
     };
 

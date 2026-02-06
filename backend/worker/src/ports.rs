@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 #[cfg(test)]
 use mockall::automock;
+use std::collections::BTreeMap;
 
 use crate::github::{GithubClient, GithubRepo};
 use common::s3::S3Service;
@@ -11,7 +12,12 @@ use common::s3::S3Service;
 pub trait GithubApi: Send + Sync {
     async fn search_repositories(&self, query: &str) -> Result<Vec<GithubRepo>>;
     async fn search_code(&self, query: &str) -> Result<Vec<GithubRepo>>;
-    async fn download_zipball(&self, owner: &str, repo: &str) -> Result<Vec<u8>>;
+    async fn clone_repository_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        token: Option<String>,
+    ) -> Result<BTreeMap<String, Vec<u8>>>;
 }
 
 #[async_trait]
@@ -24,8 +30,13 @@ impl GithubApi for GithubClient {
         self.search_code(query).await
     }
 
-    async fn download_zipball(&self, owner: &str, repo: &str) -> Result<Vec<u8>> {
-        self.download_zipball(owner, repo).await
+    async fn clone_repository_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        token: Option<String>,
+    ) -> Result<BTreeMap<String, Vec<u8>>> {
+        self.clone_repository_files(owner, repo, token).await
     }
 }
 

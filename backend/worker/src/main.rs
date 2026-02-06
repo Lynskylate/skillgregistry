@@ -97,12 +97,16 @@ async fn main() -> anyhow::Result<()> {
         ctx.services.s3.clone(),
         ctx.github.clone(),
         ctx.services.registry_service.clone(),
+        ctx.services.discovery_registry_service.clone(),
     ));
 
-    let discovery = Arc::new(activities::discovery::DiscoveryActivities::new(
-        ctx.db.clone(),
-        ctx.github.clone(),
-    ));
+    let discovery = Arc::new(
+        activities::discovery::DiscoveryActivities::new(ctx.db.clone(), ctx.github.clone())
+            .with_registry_service(
+                ctx.services.discovery_registry_service.clone(),
+                ctx.settings.github.api_url.clone(),
+            ),
+    );
 
     let sync_activities = Arc::new(activities::sync::SyncActivities::new(sync_service.clone()));
 
@@ -143,6 +147,24 @@ async fn main() -> anyhow::Result<()> {
         async move { discovery.discover_repos(queries).await }
     });
 
+    let discovery_clone = Arc::clone(&discovery);
+    worker.register_activity(
+        "fetch_due_discovery_registries_activity",
+        move |_ctx, _input: ()| {
+            let discovery = Arc::clone(&discovery_clone);
+            async move { discovery.fetch_due_registry_ids().await }
+        },
+    );
+
+    let discovery_clone = Arc::clone(&discovery);
+    worker.register_activity(
+        "run_registry_discovery_activity",
+        move |_ctx, registry_id| {
+            let discovery = Arc::clone(&discovery_clone);
+            async move { discovery.run_registry_discovery(registry_id).await }
+        },
+    );
+
     let sync_clone = Arc::clone(&sync_activities);
     worker.register_activity("fetch_pending_skills_activity", move |_ctx, input| {
         let sync = Arc::clone(&sync_clone);
@@ -182,6 +204,10 @@ async fn main() -> anyhow::Result<()> {
     worker.register_wf(
         "sync_repo_workflow",
         workflows::sync_repo_workflow::sync_repo_workflow,
+    );
+    worker.register_wf(
+        "trigger_registry_workflow",
+        workflows::trigger_registry_workflow::trigger_registry_workflow,
     );
 
     tracing::info!("Starting Temporal Worker on queue '{}'...", task_queue);

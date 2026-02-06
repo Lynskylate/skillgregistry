@@ -4,11 +4,16 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use chrono::Utc;
+use common::entities::discovery_registries;
 use common::plugins::{PluginListItemDto, SkillSummaryDto};
 use common::repositories::skills::ListSkillsParams;
 use common::skills::SkillDto;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::sync::Arc;
+use temporalio_client::{ClientOptions, WorkflowClientTrait, WorkflowOptions};
+use temporalio_sdk_core::Url;
 
 #[derive(Deserialize)]
 pub struct SearchParams {
@@ -19,6 +24,99 @@ pub struct SearchParams {
     pub repo: Option<String>,
     pub sort_by: Option<String>,
     pub order: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct DiscoveryRegistryDto {
+    pub id: i32,
+    pub platform: String,
+    pub queries: Vec<String>,
+    pub schedule_interval_seconds: i64,
+    pub token_configured: bool,
+    pub last_health_status: Option<String>,
+    pub last_health_message: Option<String>,
+    pub last_health_checked_at: Option<chrono::NaiveDateTime>,
+    pub last_run_at: Option<chrono::NaiveDateTime>,
+    pub next_run_at: Option<chrono::NaiveDateTime>,
+    pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+#[derive(Deserialize)]
+pub struct CreateDiscoveryRegistryRequest {
+    pub platform: String,
+    pub token: String,
+    pub queries: Vec<String>,
+    pub schedule_interval_seconds: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateDiscoveryRegistryRequest {
+    pub queries: Vec<String>,
+    pub schedule_interval_seconds: i64,
+}
+
+#[derive(Serialize)]
+pub struct DiscoveryRegistryHealthTestDto {
+    pub ok: bool,
+    pub message: String,
+    pub checked_at: chrono::NaiveDateTime,
+}
+
+#[derive(Serialize)]
+pub struct TriggerWorkflowDto {
+    pub workflow_id: String,
+}
+
+fn map_platform(platform: &discovery_registries::Platform) -> String {
+    match platform {
+        discovery_registries::Platform::Github => "github".to_string(),
+    }
+}
+
+fn to_registry_dto(
+    config: &common::services::discovery_registries::DiscoveryRegistryConfig,
+) -> DiscoveryRegistryDto {
+    DiscoveryRegistryDto {
+        id: config.id,
+        platform: map_platform(&config.platform),
+        queries: config.queries.clone(),
+        schedule_interval_seconds: config.schedule_interval_seconds,
+        token_configured: !config.token.trim().is_empty(),
+        last_health_status: config.last_health_status.clone(),
+        last_health_message: config.last_health_message.clone(),
+        last_health_checked_at: config.last_health_checked_at,
+        last_run_at: config.last_run_at,
+        next_run_at: config.next_run_at,
+        created_at: config.created_at,
+        updated_at: config.updated_at,
+    }
+}
+
+fn normalize_queries(input: Vec<String>) -> Vec<String> {
+    input
+        .into_iter()
+        .map(|q| q.trim().to_string())
+        .filter(|q| !q.is_empty())
+        .collect()
+}
+
+fn is_admin(user: &crate::auth::AuthUser) -> bool {
+    user.role == "admin"
+}
+
+fn create_json_payload(
+    data: &impl serde::Serialize,
+) -> temporalio_common::protos::temporal::api::common::v1::Payload {
+    temporalio_common::protos::temporal::api::common::v1::Payload {
+        metadata: std::collections::HashMap::from([(
+            "encoding".to_string(),
+            "json/plain".as_bytes().to_vec(),
+        )]),
+        data: serde_json::to_vec(data).expect("failed to serialize trigger payload"),
+        ..Default::default()
+    }
 }
 
 pub async fn list_skills(
@@ -194,4 +292,261 @@ pub async fn get_repo_plugin_command(
         }
         Err(e) => Json(ApiResponse::error(404, e.to_string())),
     }
+}
+
+pub async fn list_discovery_registries(
+    State(state): State<Arc<AppState>>,
+    user: crate::auth::AuthUser,
+) -> Json<ApiResponse<Vec<DiscoveryRegistryDto>>> {
+    if !is_admin(&user) {
+        return Json(ApiResponse::error(403, "admin access required".to_string()));
+    }
+
+    match state.services.discovery_registry_service.list_all().await {
+        Ok(configs) => {
+            let rows = configs.iter().map(to_registry_dto).collect();
+            Json(ApiResponse::success(rows))
+        }
+        Err(e) => Json(ApiResponse::error(500, e.to_string())),
+    }
+}
+
+pub async fn create_discovery_registry(
+    State(state): State<Arc<AppState>>,
+    user: crate::auth::AuthUser,
+    Json(req): Json<CreateDiscoveryRegistryRequest>,
+) -> Json<ApiResponse<DiscoveryRegistryDto>> {
+    if !is_admin(&user) {
+        return Json(ApiResponse::error(403, "admin access required".to_string()));
+    }
+
+    if req.platform.trim().to_lowercase() != "github" {
+        return Json(ApiResponse::error(
+            400,
+            "only github platform is supported".to_string(),
+        ));
+    }
+
+    let token = req.token.trim().to_string();
+    if token.is_empty() {
+        return Json(ApiResponse::error(400, "token is required".to_string()));
+    }
+
+    let queries = normalize_queries(req.queries);
+    if queries.is_empty() {
+        return Json(ApiResponse::error(
+            400,
+            "queries cannot be empty".to_string(),
+        ));
+    }
+
+    if req.schedule_interval_seconds < 60 {
+        return Json(ApiResponse::error(
+            400,
+            "schedule_interval_seconds must be at least 60".to_string(),
+        ));
+    }
+
+    match state
+        .services
+        .discovery_registry_service
+        .create_github_registry(token, queries, req.schedule_interval_seconds)
+        .await
+    {
+        Ok(config) => Json(ApiResponse::success(to_registry_dto(&config))),
+        Err(e) => Json(ApiResponse::error(500, e.to_string())),
+    }
+}
+
+pub async fn update_discovery_registry(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i32>,
+    user: crate::auth::AuthUser,
+    Json(req): Json<UpdateDiscoveryRegistryRequest>,
+) -> Json<ApiResponse<DiscoveryRegistryDto>> {
+    if !is_admin(&user) {
+        return Json(ApiResponse::error(403, "admin access required".to_string()));
+    }
+
+    let queries = normalize_queries(req.queries);
+    if queries.is_empty() {
+        return Json(ApiResponse::error(
+            400,
+            "queries cannot be empty".to_string(),
+        ));
+    }
+
+    if req.schedule_interval_seconds < 60 {
+        return Json(ApiResponse::error(
+            400,
+            "schedule_interval_seconds must be at least 60".to_string(),
+        ));
+    }
+
+    match state
+        .services
+        .discovery_registry_service
+        .update_config(id, queries, req.schedule_interval_seconds)
+        .await
+    {
+        Ok(Some(config)) => Json(ApiResponse::success(to_registry_dto(&config))),
+        Ok(None) => Json(ApiResponse::error(404, "registry not found".to_string())),
+        Err(e) => Json(ApiResponse::error(500, e.to_string())),
+    }
+}
+
+pub async fn delete_discovery_registry(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i32>,
+    user: crate::auth::AuthUser,
+) -> Json<ApiResponse<serde_json::Value>> {
+    if !is_admin(&user) {
+        return Json(ApiResponse::error(403, "admin access required".to_string()));
+    }
+
+    match state
+        .services
+        .discovery_registry_service
+        .delete_by_id(id)
+        .await
+    {
+        Ok(true) => Json(ApiResponse::success(serde_json::json!({"deleted": true}))),
+        Ok(false) => Json(ApiResponse::error(404, "registry not found".to_string())),
+        Err(e) => Json(ApiResponse::error(500, e.to_string())),
+    }
+}
+
+pub async fn test_discovery_registry_health(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i32>,
+    user: crate::auth::AuthUser,
+) -> Json<ApiResponse<DiscoveryRegistryHealthTestDto>> {
+    if !is_admin(&user) {
+        return Json(ApiResponse::error(403, "admin access required".to_string()));
+    }
+
+    let config = match state
+        .services
+        .discovery_registry_service
+        .find_by_id(id)
+        .await
+    {
+        Ok(Some(cfg)) => cfg,
+        Ok(None) => return Json(ApiResponse::error(404, "registry not found".to_string())),
+        Err(e) => return Json(ApiResponse::error(500, e.to_string())),
+    };
+
+    let checked_at = Utc::now().naive_utc();
+    let client = reqwest::Client::new();
+    let api_url = state.settings.github.api_url.trim_end_matches('/');
+    let health_url = format!("{}/rate_limit", api_url);
+
+    let response = client
+        .get(health_url)
+        .header("User-Agent", "skillregistry")
+        .header("Accept", "application/vnd.github+json")
+        .bearer_auth(config.token)
+        .send()
+        .await;
+
+    let (ok, message) = match response {
+        Ok(res) if res.status().is_success() => (true, "GitHub API reachable".to_string()),
+        Ok(res) => (
+            false,
+            format!("GitHub API returned status {}", res.status().as_u16()),
+        ),
+        Err(e) => (false, format!("GitHub API request failed: {}", e)),
+    };
+
+    let status = if ok { "ok" } else { "error" }.to_string();
+    if let Err(e) = state
+        .services
+        .discovery_registry_service
+        .update_health(id, status, Some(message.clone()), checked_at)
+        .await
+    {
+        return Json(ApiResponse::error(500, e.to_string()));
+    }
+
+    Json(ApiResponse::success(DiscoveryRegistryHealthTestDto {
+        ok,
+        message,
+        checked_at,
+    }))
+}
+
+pub async fn trigger_discovery_registry(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i32>,
+    user: crate::auth::AuthUser,
+) -> Json<ApiResponse<TriggerWorkflowDto>> {
+    if !is_admin(&user) {
+        return Json(ApiResponse::error(403, "admin access required".to_string()));
+    }
+
+    let exists = match state
+        .services
+        .discovery_registry_service
+        .find_by_id(id)
+        .await
+    {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(e) => return Json(ApiResponse::error(500, e.to_string())),
+    };
+
+    if !exists {
+        return Json(ApiResponse::error(404, "registry not found".to_string()));
+    }
+
+    let workflow_id = format!("trigger-registry-{}-{}", id, uuid::Uuid::new_v4());
+    let task_queue = state.settings.temporal.task_queue.clone();
+
+    let temporal_url = match Url::from_str(&state.settings.temporal.server_url) {
+        Ok(url) => url,
+        Err(e) => {
+            return Json(ApiResponse::error(
+                500,
+                format!("invalid temporal server url: {}", e),
+            ))
+        }
+    };
+
+    let client_options = ClientOptions::builder()
+        .target_url(temporal_url)
+        .client_name("skillregistry-api")
+        .client_version("0.1.0")
+        .build();
+
+    let client = match client_options.connect("default", None).await {
+        Ok(client) => client,
+        Err(e) => {
+            return Json(ApiResponse::error(
+                500,
+                format!("failed to connect to temporal: {}", e),
+            ))
+        }
+    };
+
+    let payload = create_json_payload(&id);
+
+    let opts = WorkflowOptions::default();
+    if let Err(e) = client
+        .start_workflow(
+            vec![payload],
+            task_queue,
+            workflow_id.clone(),
+            "trigger_registry_workflow".to_string(),
+            None,
+            opts,
+        )
+        .await
+    {
+        return Json(ApiResponse::error(
+            500,
+            format!("failed to trigger workflow: {}", e),
+        ));
+    }
+
+    Json(ApiResponse::success(TriggerWorkflowDto { workflow_id }))
 }

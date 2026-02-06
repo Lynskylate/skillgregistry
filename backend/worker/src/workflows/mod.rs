@@ -1,6 +1,7 @@
 pub mod discovery_workflow;
 pub mod sync_repo_workflow;
 pub mod sync_scheduler_workflow;
+pub mod trigger_registry_workflow;
 
 use anyhow::{anyhow, Result};
 use temporalio_common::protos::coresdk::activity_result::activity_resolution::Status;

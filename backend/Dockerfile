@@ -30,6 +30,7 @@ RUN cargo build --release --bin api --bin worker --bin setup
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 RUN apt-get update && apt-get install -y ca-certificates libssl-dev openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/api /app/api
 COPY --from=builder /app/target/release/worker /app/worker

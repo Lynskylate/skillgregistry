@@ -26,6 +26,7 @@ async fn test_all_tables_exist() {
     let db = setup_test_db().await;
 
     let expected_tables = vec![
+        "discovery_registries",
         "skill_registry",
         "skills",
         "skill_versions",

@@ -1,11 +1,40 @@
+import { useEffect, useState } from "react"
 import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom"
 import SkillList from "./pages/SkillList"
 import SkillDetail from "./pages/SkillDetail"
 import Login from "./pages/Login"
 import Register from "./pages/Register"
 import AuthCallback from "./pages/AuthCallback"
+import DiscoveryRegistries from "./pages/DiscoveryRegistries"
+import { api } from "@/lib/api"
+import type { ApiResponse } from "@/lib/types"
+
+type MeResponse = {
+  user_id: string
+  username: string | null
+  role: string
+  display_name: string | null
+  primary_email: string | null
+}
 
 function App() {
+  const [role, setRole] = useState<string | null>(null)
+
+  useEffect(() => {
+    const fetchMe = async () => {
+      try {
+        const res = await api.get<ApiResponse<MeResponse>>("/api/me")
+        if (res.data.code === 200) {
+          setRole(res.data.data?.role ?? null)
+        }
+      } catch {
+        setRole(null)
+      }
+    }
+
+    fetchMe()
+  }, [])
+
   return (
     <Router>
       <div className="min-h-screen bg-background font-sans antialiased text-foreground">
@@ -28,6 +57,11 @@ function App() {
                 <Link to="/login" className="transition-colors hover:text-foreground/80 text-foreground/60">
                   Login
                 </Link>
+                {role === "admin" && (
+                  <Link to="/admin/discovery-registries" className="transition-colors hover:text-foreground/80 text-foreground/60">
+                    Discovery Registries
+                  </Link>
+                )}
               </nav>
             </div>
             <div className="flex flex-1 items-center justify-between space-x-2 md:justify-end">
@@ -44,6 +78,7 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
+            <Route path="/admin/discovery-registries" element={<DiscoveryRegistries />} />
             <Route path="/:owner" element={<SkillList />} />
             <Route path="/:owner/:repo" element={<SkillList />} />
             <Route path="/:owner/:repo/:name" element={<SkillDetail />} />

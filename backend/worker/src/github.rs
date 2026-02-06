@@ -2,7 +2,11 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response, StatusCode};
 use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::Duration;
+use tokio::process::Command;
+use walkdir::WalkDir;
 
 #[derive(Deserialize, Debug)]
 pub struct GithubSearchResponse {
@@ -133,6 +137,45 @@ impl GithubClient {
         Ok(bytes.to_vec())
     }
 
+    pub async fn clone_repository_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        token: Option<String>,
+    ) -> Result<BTreeMap<String, Vec<u8>>> {
+        let temp_dir = tempfile::tempdir()?;
+        let checkout_dir = temp_dir.path().join("repo");
+        let clone_url = format!("https://github.com/{}/{}.git", owner, repo);
+
+        let mut cmd = Command::new("git");
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        if let Some(auth_token) = token.as_ref() {
+            cmd.arg("-c").arg(format!(
+                "http.extraheader=Authorization: Bearer {}",
+                auth_token
+            ));
+        }
+
+        cmd.arg("clone")
+            .arg("--depth")
+            .arg("1")
+            .arg("--quiet")
+            .arg(clone_url)
+            .arg(&checkout_dir);
+
+        let output = cmd.output().await?;
+        if !output.status.success() {
+            let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if let Some(auth_token) = token.as_ref() {
+                stderr = stderr.replace(auth_token, "***");
+            }
+
+            return Err(anyhow::anyhow!("git clone failed: {}", stderr.trim()));
+        }
+
+        collect_repository_files(&checkout_dir)
+    }
+
     async fn send_request_with_retry(&self, url: &str) -> Result<Response> {
         let mut attempts = 0;
         loop {
@@ -178,4 +221,35 @@ impl GithubClient {
             }
         }
     }
+}
+
+fn collect_repository_files(repo_dir: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+    let mut files = BTreeMap::new();
+
+    for entry in WalkDir::new(repo_dir).follow_links(false) {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type().is_dir() {
+            continue;
+        }
+
+        if path
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy() == ".git")
+        {
+            continue;
+        }
+
+        let rel = path
+            .strip_prefix(repo_dir)
+            .map_err(|e| anyhow::anyhow!("failed to strip repo root: {}", e))?;
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        if rel.is_empty() {
+            continue;
+        }
+
+        files.insert(rel, std::fs::read(path)?);
+    }
+
+    Ok(files)
 }

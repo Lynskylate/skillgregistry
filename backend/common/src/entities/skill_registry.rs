@@ -15,6 +15,7 @@ pub enum Platform {
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
+    pub discovery_registry_id: Option<i32>,
     pub platform: Platform,
     pub owner: String,
     pub name: String,
@@ -36,11 +37,25 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_many = "super::skills::Entity")]
     Skills,
+    #[sea_orm(
+        belongs_to = "super::discovery_registries::Entity",
+        from = "Column::DiscoveryRegistryId",
+        to = "super::discovery_registries::Column::Id",
+        on_update = "NoAction",
+        on_delete = "SetNull"
+    )]
+    DiscoveryRegistry,
 }
 
 impl Related<super::skills::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Skills.def()
+    }
+}
+
+impl Related<super::discovery_registries::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DiscoveryRegistry.def()
     }
 }
 

@@ -8,6 +8,7 @@ use common::entities::{prelude::*, skill_registry, *};
 use common::settings::Settings;
 use migration::MigratorTrait;
 use sea_orm::{ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::Arc;
 use zip::write::FileOptions;
@@ -24,6 +25,13 @@ fn create_zip(files: Vec<(&str, &[u8])>) -> Vec<u8> {
         zip.finish().unwrap();
     }
     buf
+}
+
+fn create_file_map(files: Vec<(&str, &[u8])>) -> BTreeMap<String, Vec<u8>> {
+    files
+        .into_iter()
+        .map(|(path, content)| (path.to_string(), content.to_vec()))
+        .collect()
 }
 
 async fn setup_db() -> Result<(DatabaseConnection, common::Services)> {
@@ -85,16 +93,17 @@ async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
         }])
     });
 
-    let zip_data = create_zip(vec![(
+    let file_map = create_file_map(vec![(
         "skill-a/SKILL.md",
         b"---\nname: test-skill\ndescription: test description\nmetadata:\n  version: 1.0.0\n---\n# Body\n",
     )]);
     github
-        .expect_download_zipball()
-        .returning(move |owner, repo| {
+        .expect_clone_repository_files()
+        .returning(move |owner, repo, token| {
             assert_eq!(owner, "test-owner");
             assert_eq!(repo, "standalone");
-            Ok(zip_data.clone())
+            assert!(token.is_none());
+            Ok(file_map.clone())
         });
 
     let mut s3 = MockStorage::new();
@@ -127,12 +136,13 @@ async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
         Arc::new(s3),
         github_arc.clone(),
         services.registry_service.clone(),
+        services.discovery_registry_service.clone(),
     );
 
     let pending = sync_service.fetch_pending().await?;
     assert_eq!(pending, vec![registry.id]);
 
-    let res = sync_service.process_one(registry.id).await?;
+    let _res = sync_service.process_one(registry.id).await?;
 
     let updated = SkillRegistry::find_by_id(registry.id)
         .one(&db)
@@ -194,7 +204,7 @@ async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
   "version": "1.2.3",
   "description": "plugin one"
 }"#;
-    let zip_data = create_zip(vec![
+    let file_map = create_file_map(vec![
         (".claude-plugin/marketplace.json", marketplace_json),
         ("plugins/p1/.claude-plugin/plugin.json", plugin_json),
         (
@@ -211,11 +221,12 @@ async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
         ),
     ]);
     github
-        .expect_download_zipball()
-        .returning(move |owner, repo| {
+        .expect_clone_repository_files()
+        .returning(move |owner, repo, token| {
             assert_eq!(owner, "test-owner");
             assert_eq!(repo, "market");
-            Ok(zip_data.clone())
+            assert!(token.is_none());
+            Ok(file_map.clone())
         });
 
     let mut s3 = MockStorage::new();
@@ -248,6 +259,7 @@ async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
         Arc::new(s3),
         github_arc.clone(),
         services.registry_service.clone(),
+        services.discovery_registry_service.clone(),
     );
 
     let pending = sync_service.fetch_pending().await?;

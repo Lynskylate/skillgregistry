@@ -1,3 +1,4 @@
+pub mod discovery_registries;
 pub mod github;
 pub mod plugins;
 pub mod registry;

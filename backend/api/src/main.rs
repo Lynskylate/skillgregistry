@@ -2,7 +2,11 @@ mod auth;
 mod handlers;
 mod models;
 
-use axum::{http::HeaderValue, routing::get, Router};
+use axum::{
+    http::HeaderValue,
+    routing::{get, patch, post},
+    Router,
+};
 use common::build_all;
 use common::settings::Settings;
 use std::net::SocketAddr;
@@ -79,6 +83,22 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::list_repo_skills),
         )
         .route("/api/me", get(auth::me))
+        .route(
+            "/api/admin/discovery-registries",
+            get(handlers::list_discovery_registries).post(handlers::create_discovery_registry),
+        )
+        .route(
+            "/api/admin/discovery-registries/:id",
+            patch(handlers::update_discovery_registry).delete(handlers::delete_discovery_registry),
+        )
+        .route(
+            "/api/admin/discovery-registries/:id/test-health",
+            post(handlers::test_discovery_registry_health),
+        )
+        .route(
+            "/api/admin/discovery-registries/:id/trigger",
+            post(handlers::trigger_discovery_registry),
+        )
         .nest("/api/auth", auth::router())
         .layer(cors)
         .with_state(state);
