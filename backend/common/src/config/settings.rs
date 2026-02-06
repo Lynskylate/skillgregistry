@@ -8,16 +8,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Parser, Debug)]
 struct Cli {
-    #[clap(long, env = "SKILLREGISTRY_PORT")]
+    #[clap(long)]
     port: Option<u16>,
 
-    #[clap(long, env = "SKILLREGISTRY_CONFIG_PATH")]
+    #[clap(long)]
     config: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Settings {
-    #[serde(default = "default_port")]
     pub port: u16,
     pub database: DatabaseSettings,
     pub s3: S3Settings,
@@ -28,10 +27,6 @@ pub struct Settings {
     pub auth: AuthSettings,
     #[serde(default)]
     pub debug: bool,
-}
-
-fn default_port() -> u16 {
-    3000
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -54,12 +49,7 @@ pub struct S3Settings {
 pub struct GithubSettings {
     pub search_keywords: String,
     pub token: Option<String>,
-    #[serde(default = "default_github_api_url")]
     pub api_url: String,
-}
-
-fn default_github_api_url() -> String {
-    "https://api.github.com".to_string()
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -73,10 +63,8 @@ pub struct TemporalSettings {
     pub task_queue: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AuthSettings {
-    #[serde(default)]
-    pub enabled: bool,
     pub frontend_origin: Option<String>,
     pub cookie_domain: Option<String>,
     #[serde(default)]
@@ -160,27 +148,13 @@ pub struct SsoSettings {
     pub base_url: Option<String>,
 }
 
-impl Default for AuthSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            frontend_origin: None,
-            cookie_domain: None,
-            jwt: JwtSettings::default(),
-            admin_bootstrap: AdminBootstrapSettings::default(),
-            oauth: OAuthSettings::default(),
-            sso: SsoSettings::default(),
-        }
-    }
-}
-
 impl Settings {
     #[allow(clippy::result_large_err)]
     pub fn new() -> Result<Self, figment::Error> {
         dotenv().ok();
         let cli = Cli::parse();
 
-        let mut figment = Figment::from(Serialized::defaults(Settings::default_settings()));
+        let mut figment = Figment::from(Serialized::defaults(Settings::default()));
 
         figment = figment.merge(Toml::file("/etc/skillregistry/config.toml"));
 
@@ -190,54 +164,14 @@ impl Settings {
 
         figment = figment.merge(Toml::file("skillregistry.toml"));
 
-        if let Some(config_path) = &cli.config {
+        let config_path = cli
+            .config
+            .or_else(|| std::env::var("SKILLREGISTRY_CONFIG_PATH").ok());
+        if let Some(config_path) = config_path {
             figment = figment.merge(Toml::file(config_path));
         }
 
-        figment = figment.merge(Env::prefixed("SKILLREGISTRY_"));
-
-        figment = figment.merge(
-            Env::raw()
-                .only(&["DATABASE_URL"])
-                .map(|_| "database.url".into()),
-        );
-
-        figment = figment.merge(
-            Env::raw()
-                .only(&["S3_ENDPOINT"])
-                .map(|_| "s3.endpoint".into()),
-        );
-        figment = figment.merge(Env::raw().only(&["S3_BUCKET"]).map(|_| "s3.bucket".into()));
-        figment = figment.merge(Env::raw().only(&["S3_REGION"]).map(|_| "s3.region".into()));
-
-        figment = figment.merge(
-            Env::raw()
-                .only(&["AWS_ACCESS_KEY_ID"])
-                .map(|_| "s3.access_key_id".into()),
-        );
-        figment = figment.merge(
-            Env::raw()
-                .only(&["AWS_SECRET_ACCESS_KEY"])
-                .map(|_| "s3.secret_access_key".into()),
-        );
-        figment = figment.merge(Env::raw().only(&["AWS_REGION"]).map(|_| "s3.region".into()));
-        figment = figment.merge(
-            Env::raw()
-                .only(&["S3_FORCE_PATH_STYLE"])
-                .map(|_| "s3.force_path_style".into()),
-        );
-
-        figment = figment.merge(
-            Env::raw()
-                .only(&["TEMPORAL_SERVER_URL"])
-                .map(|_| "temporal.server_url".into()),
-        );
-
-        figment = figment.merge(
-            Env::raw()
-                .only(&["GITHUB_TOKEN"])
-                .map(|_| "github.token".into()),
-        );
+        figment = figment.merge(Env::prefixed("SKILLREGISTRY_").split("__"));
 
         if let Some(port) = cli.port {
             figment = figment.merge(("port", port));
@@ -245,8 +179,10 @@ impl Settings {
 
         figment.extract()
     }
+}
 
-    fn default_settings() -> Settings {
+impl Default for Settings {
+    fn default() -> Self {
         Settings {
             port: 3000,
             debug: false,
@@ -264,7 +200,7 @@ impl Settings {
             github: GithubSettings {
                 search_keywords: "topic:agent-skill".to_string(),
                 token: None,
-                api_url: default_github_api_url(),
+                api_url: "https://api.github.com".to_string(),
             },
             worker: WorkerSettings {
                 scan_interval_seconds: 3600,

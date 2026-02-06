@@ -36,10 +36,6 @@ impl S3Service {
                 config_loader.credentials_provider(SharedCredentialsProvider::new(creds));
         }
 
-        let endpoint = endpoint
-            .or_else(|| std::env::var("S3_ENDPOINT_URL").ok())
-            .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok());
-
         if let Some(ep) = endpoint.clone() {
             let ep = ep.trim_matches('"').to_string();
             let ep = if ep.starts_with("http://") || ep.starts_with("https://") {

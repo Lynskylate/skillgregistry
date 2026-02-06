@@ -140,10 +140,17 @@ This script:
 docker-compose -f docker-compose.test.yml up -d
 
 # Set environment variables
-export DATABASE_URL="postgres://postgres:password@localhost:5433/skillregistry_test"
+export SKILLREGISTRY_DATABASE__URL="postgres://postgres:password@localhost:5433/skillregistry_test"
 export API_URL="http://localhost:3000"
-export TEMPORAL_SERVER_URL="http://localhost:7234"
-export S3_ENDPOINT="http://localhost:9002"
+export SKILLREGISTRY_TEMPORAL__SERVER_URL="http://localhost:7234"
+export SKILLREGISTRY_TEMPORAL__TASK_QUEUE="skill-registry-queue"
+export SKILLREGISTRY_S3__ENDPOINT="http://localhost:9002"
+
+# Legacy aliases used by backend/e2e-tests
+export DATABASE_URL="$SKILLREGISTRY_DATABASE__URL"
+export TEMPORAL_SERVER_URL="$SKILLREGISTRY_TEMPORAL__SERVER_URL"
+export SKILLREGISTRY_TEMPORAL_TASK_QUEUE="$SKILLREGISTRY_TEMPORAL__TASK_QUEUE"
+export S3_ENDPOINT="$SKILLREGISTRY_S3__ENDPOINT"
 
 # Run tests
 cd backend

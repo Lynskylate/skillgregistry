@@ -35,11 +35,11 @@ createdb skillregistry
 Create a `.env` file in `backend/` or set environment variables:
 
 ```bash
-DATABASE_URL=postgres://user:password@localhost/skillregistry
-GITHUB_TOKEN=your_github_token
-AWS_ACCESS_KEY_ID=your_key
-AWS_SECRET_ACCESS_KEY=your_secret
-AWS_REGION=us-east-1
+SKILLREGISTRY_DATABASE__URL=postgres://user:password@localhost/skillregistry
+SKILLREGISTRY_GITHUB__TOKEN=your_github_token
+SKILLREGISTRY_S3__ACCESS_KEY_ID=your_key
+SKILLREGISTRY_S3__SECRET_ACCESS_KEY=your_secret
+SKILLREGISTRY_S3__REGION=us-east-1
 ```
 
 Run the API:

@@ -40,13 +40,16 @@ services:
         - RUST_VERSION=1.93.0-bookworm
     command: ["/app/api"]
     environment:
-      - DATABASE_URL=postgres://postgres:password@postgres:5432/skillregistry
-      - S3_ENDPOINT=http://rustfs:9000
-      - S3_BUCKET=skills
-      - S3_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=rustfsadmin
-      - AWS_SECRET_ACCESS_KEY=rustfsadmin
-      - TEMPORAL_SERVER_URL=http://temporal:7233
+      - SKILLREGISTRY_DATABASE__URL=postgres://postgres:password@postgres:5432/skillregistry
+      - SKILLREGISTRY_S3__ENDPOINT=http://rustfs:9000
+      - SKILLREGISTRY_S3__BUCKET=skills
+      - SKILLREGISTRY_S3__REGION=us-east-1
+      - SKILLREGISTRY_S3__ACCESS_KEY_ID=rustfsadmin
+      - SKILLREGISTRY_S3__SECRET_ACCESS_KEY=rustfsadmin
+      - SKILLREGISTRY_TEMPORAL__SERVER_URL=http://temporal:7233
+      - SKILLREGISTRY_AUTH__JWT__SIGNING_KEY=dev-secret-key-change-in-production
+      - SKILLREGISTRY_AUTH__JWT__ISSUER=skillregistry
+      - SKILLREGISTRY_AUTH__JWT__AUDIENCE=skillregistry
       - RUST_LOG=info
     depends_on:
       postgres:
@@ -65,13 +68,16 @@ services:
         - RUST_VERSION=1.93.0-bookworm
     command: ["/app/worker"]
     environment:
-      - DATABASE_URL=postgres://postgres:password@postgres:5432/skillregistry
-      - S3_ENDPOINT=http://rustfs:9000
-      - S3_BUCKET=skills
-      - S3_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=rustfsadmin
-      - AWS_SECRET_ACCESS_KEY=rustfsadmin
-      - TEMPORAL_SERVER_URL=http://temporal:7233
+      - SKILLREGISTRY_DATABASE__URL=postgres://postgres:password@postgres:5432/skillregistry
+      - SKILLREGISTRY_S3__ENDPOINT=http://rustfs:9000
+      - SKILLREGISTRY_S3__BUCKET=skills
+      - SKILLREGISTRY_S3__REGION=us-east-1
+      - SKILLREGISTRY_S3__ACCESS_KEY_ID=rustfsadmin
+      - SKILLREGISTRY_S3__SECRET_ACCESS_KEY=rustfsadmin
+      - SKILLREGISTRY_TEMPORAL__SERVER_URL=http://temporal:7233
+      - SKILLREGISTRY_AUTH__JWT__SIGNING_KEY=dev-secret-key-change-in-production
+      - SKILLREGISTRY_AUTH__JWT__ISSUER=skillregistry
+      - SKILLREGISTRY_AUTH__JWT__AUDIENCE=skillregistry
       - RUST_LOG=info
     depends_on:
       postgres:
@@ -90,14 +96,19 @@ services:
         - RUST_VERSION=1.93.0-bookworm
     command: ["/app/setup"]
     environment:
-      - DATABASE_URL=postgres://postgres:password@postgres:5432/skillregistry
-      - S3_ENDPOINT=http://rustfs:9000
-      - S3_BUCKET=skills
-      - S3_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=rustfsadmin
-      - AWS_SECRET_ACCESS_KEY=rustfsadmin
-      - TEMPORAL_SERVER_URL=http://temporal:7233
+      - SKILLREGISTRY_DATABASE__URL=postgres://postgres:password@postgres:5432/skillregistry
+      - SKILLREGISTRY_S3__ENDPOINT=http://rustfs:9000
+      - SKILLREGISTRY_S3__BUCKET=skills
+      - SKILLREGISTRY_S3__REGION=us-east-1
+      - SKILLREGISTRY_S3__ACCESS_KEY_ID=rustfsadmin
+      - SKILLREGISTRY_S3__SECRET_ACCESS_KEY=rustfsadmin
+      - SKILLREGISTRY_TEMPORAL__SERVER_URL=http://temporal:7233
+      - SKILLREGISTRY_AUTH__JWT__SIGNING_KEY=dev-secret-key-change-in-production
+      - SKILLREGISTRY_AUTH__JWT__ISSUER=skillregistry
+      - SKILLREGISTRY_AUTH__JWT__AUDIENCE=skillregistry
       - RUST_LOG=info
+      - SKILLREGISTRY_ADMIN_USERNAME=admin
+      - SKILLREGISTRY_ADMIN_PASSWORD=admin
     depends_on:
       postgres:
         condition: service_healthy

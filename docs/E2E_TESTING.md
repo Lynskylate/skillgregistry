@@ -69,14 +69,25 @@ docker-compose -f docker-compose.test.yml up -d
 
 2. Set environment variables:
 ```bash
-export DATABASE_URL="postgres://postgres:password@localhost:5433/skillregistry_test"
+export SKILLREGISTRY_DATABASE__URL="postgres://postgres:password@localhost:5433/skillregistry_test"
 export API_URL="http://localhost:3000"
-export TEMPORAL_SERVER_URL="http://localhost:7234"
-export S3_ENDPOINT="http://localhost:9002"
-export AWS_ACCESS_KEY_ID="rustfsadmin"
-export AWS_SECRET_ACCESS_KEY="rustfsadmin"
-export S3_BUCKET="skills"
-export S3_REGION="us-east-1"
+export SKILLREGISTRY_TEMPORAL__SERVER_URL="http://localhost:7234"
+export SKILLREGISTRY_TEMPORAL__TASK_QUEUE="skill-registry-queue"
+export SKILLREGISTRY_S3__ENDPOINT="http://localhost:9002"
+export SKILLREGISTRY_S3__ACCESS_KEY_ID="rustfsadmin"
+export SKILLREGISTRY_S3__SECRET_ACCESS_KEY="rustfsadmin"
+export SKILLREGISTRY_S3__BUCKET="skills"
+export SKILLREGISTRY_S3__REGION="us-east-1"
+
+# Legacy aliases used by backend/e2e-tests
+export DATABASE_URL="$SKILLREGISTRY_DATABASE__URL"
+export TEMPORAL_SERVER_URL="$SKILLREGISTRY_TEMPORAL__SERVER_URL"
+export SKILLREGISTRY_TEMPORAL_TASK_QUEUE="$SKILLREGISTRY_TEMPORAL__TASK_QUEUE"
+export S3_ENDPOINT="$SKILLREGISTRY_S3__ENDPOINT"
+export AWS_ACCESS_KEY_ID="$SKILLREGISTRY_S3__ACCESS_KEY_ID"
+export AWS_SECRET_ACCESS_KEY="$SKILLREGISTRY_S3__SECRET_ACCESS_KEY"
+export S3_BUCKET="$SKILLREGISTRY_S3__BUCKET"
+export S3_REGION="$SKILLREGISTRY_S3__REGION"
 ```
 
 3. Run migrations:
