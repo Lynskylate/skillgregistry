@@ -286,59 +286,56 @@ async fn find_uploaded_artifact(
     registry_id: i32,
     created_after: NaiveDateTime,
 ) -> Result<Option<UploadedArtifact>> {
-    let skill_rows = Skills::find()
+    let latest_skill_version = SkillVersions::find()
+        .filter(skill_versions::Column::CreatedAt.gte(created_after))
+        .filter(skill_versions::Column::S3Key.is_not_null())
+        .find_also_related(Skills)
         .filter(skills::Column::SkillRegistryId.eq(registry_id))
-        .all(db)
-        .await?;
+        .order_by_desc(skill_versions::Column::CreatedAt)
+        .one(db)
+        .await?
+        .and_then(|(version, skill)| {
+            let skill = skill?;
+            Some(UploadedArtifact {
+                source: "skill",
+                name: skill.name,
+                version: version.version,
+                s3_key: version.s3_key?,
+                created_at: version.created_at,
+            })
+        });
 
-    for skill in skill_rows {
-        if let Some(version) = SkillVersions::find()
-            .filter(skill_versions::Column::SkillId.eq(skill.id))
-            .filter(skill_versions::Column::CreatedAt.gte(created_after))
-            .filter(skill_versions::Column::S3Key.is_not_null())
-            .order_by_desc(skill_versions::Column::CreatedAt)
-            .one(db)
-            .await?
-        {
-            if let Some(s3_key) = version.s3_key {
-                return Ok(Some(UploadedArtifact {
-                    source: "skill",
-                    name: skill.name,
-                    version: version.version,
-                    s3_key,
-                    created_at: version.created_at,
-                }));
-            }
-        }
-    }
-
-    let plugin_rows = Plugins::find()
+    let latest_plugin_version = PluginVersions::find()
+        .filter(plugin_versions::Column::CreatedAt.gte(created_after))
+        .filter(plugin_versions::Column::S3Key.is_not_null())
+        .find_also_related(Plugins)
         .filter(plugins::Column::SkillRegistryId.eq(registry_id))
-        .all(db)
-        .await?;
+        .order_by_desc(plugin_versions::Column::CreatedAt)
+        .one(db)
+        .await?
+        .and_then(|(version, plugin)| {
+            let plugin = plugin?;
+            Some(UploadedArtifact {
+                source: "plugin",
+                name: plugin.name,
+                version: version.version,
+                s3_key: version.s3_key?,
+                created_at: version.created_at,
+            })
+        });
 
-    for plugin in plugin_rows {
-        if let Some(version) = PluginVersions::find()
-            .filter(plugin_versions::Column::PluginId.eq(plugin.id))
-            .filter(plugin_versions::Column::CreatedAt.gte(created_after))
-            .filter(plugin_versions::Column::S3Key.is_not_null())
-            .order_by_desc(plugin_versions::Column::CreatedAt)
-            .one(db)
-            .await?
-        {
-            if let Some(s3_key) = version.s3_key {
-                return Ok(Some(UploadedArtifact {
-                    source: "plugin",
-                    name: plugin.name,
-                    version: version.version,
-                    s3_key,
-                    created_at: version.created_at,
-                }));
+    Ok(match (latest_skill_version, latest_plugin_version) {
+        (Some(skill), Some(plugin)) => {
+            if skill.created_at >= plugin.created_at {
+                Some(skill)
+            } else {
+                Some(plugin)
             }
         }
-    }
-
-    Ok(None)
+        (Some(skill), None) => Some(skill),
+        (None, Some(plugin)) => Some(plugin),
+        (None, None) => None,
+    })
 }
 
 async fn assert_s3_object_exists(cfg: &E2eConfig, key: &str) -> Result<()> {
@@ -408,7 +405,7 @@ async fn build_s3_client(cfg: &E2eConfig) -> S3Client {
 fn create_json_payload(input: &impl Serialize) -> Payload {
     Payload {
         metadata: HashMap::from([("encoding".to_string(), b"json/plain".to_vec())]),
-        data: serde_json::to_vec(input).unwrap_or_default(),
+        data: serde_json::to_vec(input).expect("failed to serialize JSON payload"),
         ..Default::default()
     }
 }
@@ -432,7 +429,8 @@ fn normalize_endpoint(endpoint: &str) -> String {
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         trimmed.to_string()
     } else {
-        format!("https://{}", trimmed)
+        // Most S3-compatible local endpoints (e.g. RustFS/MinIO) default to plain HTTP.
+        format!("http://{}", trimmed)
     }
 }
 

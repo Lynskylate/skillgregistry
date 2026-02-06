@@ -27,6 +27,12 @@ impl DiscoveryActivities {
         &self,
         queries: Vec<String>,
     ) -> Result<DiscoveryResult, ActivityError> {
+        self.discover_repos_inner(queries)
+            .await
+            .map_err(ActivityError::from)
+    }
+
+    async fn discover_repos_inner(&self, queries: Vec<String>) -> Result<DiscoveryResult> {
         tracing::info!("Starting discovery task...");
 
         let mut new_count = 0;

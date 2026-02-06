@@ -141,18 +141,7 @@ pub async fn sync_standalone_skills(
     exclude_prefixes: &HashSet<String>,
     require_any_valid: bool,
 ) -> Result<SkillSyncOutcome> {
-    std::fs::write(
-        "/tmp/worker_debug.txt",
-        format!(
-            "[STANDALONE] sync_standalone_skills called with repo.name={}\n",
-            repo.name
-        ),
-    )
-    .ok();
-    eprintln!(
-        "[STANDALONE] sync_standalone_skills called with repo.name={}",
-        repo.name
-    );
+    tracing::debug!(repo_name = %repo.name, "sync_standalone_skills called");
     let repo_store = SkillRepoHelper { db };
     let mut candidate_paths: Vec<String> = all_files
         .keys()
@@ -163,11 +152,6 @@ pub async fn sync_standalone_skills(
 
     tracing::info!(
         "sync_standalone_skills: found {} SKILL.md files in repo {}",
-        candidate_paths.len(),
-        repo.name
-    );
-    eprintln!(
-        "[STANDALONE] Found {} SKILL.md files in repo {}",
         candidate_paths.len(),
         repo.name
     );
@@ -262,12 +246,6 @@ pub async fn sync_standalone_skills(
             .unwrap_or_else(|| format!("0.0.{}", derived_patch));
 
         let existing_skill = repo_store.find_skill(repo.id, &frontmatter.name).await?;
-        eprintln!(
-            "[STANDALONE] Processing skill '{}': existing_skill={:?}, version={}",
-            frontmatter.name,
-            existing_skill.is_some(),
-            version_str
-        );
         tracing::info!(
             "Skill '{}': existing_skill={:?}, version={}",
             frontmatter.name,
@@ -299,26 +277,6 @@ pub async fn sync_standalone_skills(
             .as_ref()
             .and_then(|v| v.file_hash.as_ref())
             .map(|h| h == &package_hash);
-
-        // Force debug output to file
-        let _ = std::fs::write(
-            "/tmp/worker_debug_unchanged_check.txt",
-            format!("Skill '{}': existing_version={:?}, file_hash_match={:?}, unchanged={}, skill_id={}, version_str={}\n",
-                    frontmatter.name,
-                    existing_version.as_ref().map(|v| &v.file_hash),
-                    file_hash_match,
-                    unchanged,
-                    skill_id,
-                    version_str)
-        );
-
-        eprintln!(
-            "[STANDALONE] Skill '{}': existing_version={:?}, file_hash_match={:?}, unchanged={}",
-            frontmatter.name,
-            existing_version.as_ref().map(|v| &v.file_hash),
-            file_hash_match,
-            unchanged
-        );
         tracing::info!(
             "Skill '{}': existing_version={:?}, file_hash_match={:?}, unchanged={}",
             frontmatter.name,
@@ -328,35 +286,14 @@ pub async fn sync_standalone_skills(
         );
 
         if unchanged {
-            eprintln!(
-                "[STANDALONE] Skipping upload for {} (unchanged)",
-                frontmatter.name
-            );
             tracing::info!("Skipping upload for {} (unchanged)", frontmatter.name);
-            std::fs::write(
-                "/tmp/worker_debug_upload_skipped.txt",
-                format!("Upload skipped for {}\n", frontmatter.name),
-            )
-            .ok();
             continue;
         }
-
-        std::fs::write(
-            "/tmp/worker_debug_upload_attempt.txt",
-            format!("About to upload {}\n", frontmatter.name),
-        )
-        .ok();
         let new_zip_buffer =
             tokio::task::spawn_blocking(move || archive::package_zip(&prefixed_skill_files))
                 .await
                 .map_err(|e| anyhow::anyhow!("Zip packaging task failed: {}", e))??;
         let s3_key = format!("skills/{}/{}.zip", frontmatter.name, version_str);
-        eprintln!(
-            "[STANDALONE] About to upload skill {} ({} bytes) to s3_key={}",
-            frontmatter.name,
-            new_zip_buffer.len(),
-            s3_key
-        );
         tracing::info!(
             "Uploading skill {} ({} bytes) to s3_key={}",
             frontmatter.name,
@@ -364,10 +301,6 @@ pub async fn sync_standalone_skills(
             s3_key
         );
         let oss_url = s3.upload(&s3_key, new_zip_buffer).await?;
-        eprintln!(
-            "[STANDALONE] Upload complete for {}: oss_url={}",
-            frontmatter.name, oss_url
-        );
         tracing::info!(
             "Upload complete for {}: oss_url={}",
             frontmatter.name,
@@ -387,11 +320,6 @@ pub async fn sync_standalone_skills(
                 frontmatter.metadata.clone(),
             )
             .await?;
-
-        eprintln!(
-            "[STANDALONE] After upsert_skill_version - s3_key={}, oss_url={}, file_hash={}",
-            s3_key, oss_url, package_hash
-        );
         changed = true;
     }
 
@@ -413,11 +341,6 @@ pub async fn sync_standalone_skills(
         }
     }
 
-    eprintln!(
-        "[STANDALONE] sync_standalone_skills returning: changed={}, found_any={}",
-        changed,
-        !found_skill_names.is_empty()
-    );
     tracing::info!(
         "sync_standalone_skills returning: changed={}, found_any={}",
         changed,

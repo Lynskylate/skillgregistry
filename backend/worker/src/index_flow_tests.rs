@@ -67,7 +67,6 @@ async fn setup_db() -> Result<(DatabaseConnection, common::Services)> {
 
 #[tokio::test]
 async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
-    std::fs::write("/tmp/worker_debug.txt", "Test started\n").ok();
     let (db, services) = setup_db().await?;
 
     let mut github = MockGithubApi::new();
@@ -117,16 +116,10 @@ async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
         .one(&db)
         .await?
         .unwrap();
-    let _ = std::fs::write(
-        "/tmp/worker_debug_after_discovery.txt",
-        format!(
-            "After discovery - status={}, repo_type={:?}\n",
-            registry.status, registry.repo_type
-        ),
-    );
-    eprintln!(
-        "DEBUG: After discovery (standalone) - registry.status='{}', repo_type={:?}",
-        registry.status, registry.repo_type
+    tracing::debug!(
+        registry_status = %registry.status,
+        registry_repo_type = ?registry.repo_type,
+        "After discovery (standalone)"
     );
 
     let sync_service = SyncService::new(
@@ -139,27 +132,7 @@ async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
     let pending = sync_service.fetch_pending().await?;
     assert_eq!(pending, vec![registry.id]);
 
-    dbg!("About to call process_one");
-
-    let res = match sync_service.process_one(registry.id).await {
-        Ok(r) => {
-            std::fs::write(
-                "/tmp/worker_debug.txt",
-                "process_one completed successfully\n",
-            )
-            .ok();
-            eprintln!("DEBUG: process_one completed successfully");
-            r
-        }
-        Err(e) => {
-            std::fs::write(
-                "/tmp/worker_debug.txt",
-                format!("process_one failed: {:?}\n", e),
-            )
-            .ok();
-            panic!("process_one failed: {:?}", e);
-        }
-    };
+    let res = sync_service.process_one(registry.id).await?;
 
     let updated = SkillRegistry::find_by_id(registry.id)
         .one(&db)
@@ -264,9 +237,10 @@ async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
         .one(&db)
         .await?
         .unwrap();
-    eprintln!(
-        "DEBUG: After discovery (marketplace) - registry.status='{}', repo_type={:?}",
-        registry.status, registry.repo_type
+    tracing::debug!(
+        registry_status = %registry.status,
+        registry_repo_type = ?registry.repo_type,
+        "After discovery (marketplace)"
     );
 
     let sync_service = SyncService::new(
@@ -280,10 +254,7 @@ async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
     assert_eq!(pending, vec![registry.id]);
 
     let res = sync_service.process_one(registry.id).await?;
-    eprintln!(
-        "DEBUG: After sync (marketplace) - res.status='{}', res.version={:?}",
-        res.status, res.version
-    );
+    tracing::debug!(status = %res.status, version = ?res.version, "After sync (marketplace)");
     assert!(matches!(res.status.as_str(), "Updated" | "Unchanged"));
 
     let updated = SkillRegistry::find_by_id(registry.id)

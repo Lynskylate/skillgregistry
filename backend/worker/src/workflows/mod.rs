@@ -14,7 +14,7 @@ pub fn create_json_payload(
             "encoding".to_string(),
             "json/plain".as_bytes().to_vec(),
         )]),
-        data: serde_json::to_vec(data).unwrap_or_default(),
+        data: serde_json::to_vec(data).expect("failed to serialize JSON payload"),
         ..Default::default()
     }
 }
@@ -40,7 +40,9 @@ pub async fn execute_activity<T: serde::de::DeserializeOwned>(
             }
             Status::Failed(f) => Err(anyhow!("Activity failed: {:?}", f)),
             Status::Cancelled(_) => Err(anyhow!("Activity cancelled")),
-            Status::Backoff(_) => Err(anyhow!("Activity backoff?")), // Should not happen in result
+            Status::Backoff(_) => Err(anyhow!(
+                "Activity returned Backoff status; this helper expects Completed/Failed/Cancelled"
+            )),
         }
     } else {
         Err(anyhow!("Activity returned no status"))
@@ -65,7 +67,9 @@ pub async fn execute_local_activity<T: serde::de::DeserializeOwned>(
             }
             Status::Failed(f) => Err(anyhow!("Activity failed: {:?}", f)),
             Status::Cancelled(_) => Err(anyhow!("Activity cancelled")),
-            Status::Backoff(_) => Err(anyhow!("Activity backoff?")),
+            Status::Backoff(_) => Err(anyhow!(
+                "Local activity returned Backoff status; this helper expects Completed/Failed/Cancelled"
+            )),
         }
     } else {
         Err(anyhow!("Activity returned no status"))

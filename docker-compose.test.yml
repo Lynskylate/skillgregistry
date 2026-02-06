@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   rustfs-test:
-    image: rustfs/rustfs:latest
+    image: rustfs/rustfs:0.2.1
     container_name: rustfs-test
     ports:
       - "9002:9000"
@@ -11,7 +11,7 @@ services:
       - rustfs_test_data:/data
 
   temporal-test:
-    image: temporalio/temporal:latest
+    image: temporalio/temporal:1.23.0
     container_name: temporal-test
     ports:
       - "7234:7233"
