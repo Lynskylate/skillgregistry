@@ -1,0 +1,4 @@
+interface:
+  display_name: "Temporal Rust SDK"
+  short_description: "Build Temporal Rust workflows, workers, and activities"
+  default_prompt: "Use $temporal-rust-sdk to implement or debug Temporal Rust workflows and activities with runnable worker and starter commands."

@@ -14,10 +14,14 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 
 [dependencies.sea-orm-migration]
 features = [
-    # Enable at least one `ASYNC_RUNTIME` and `DATABASE_DRIVER` feature if you want to run migration via CLI.
-    # View the list of supported features at https://www.sea-ql.org/SeaORM/docs/install-and-config/database-and-async-runtime.
-    # e.g.
-    # "runtime-tokio-rustls",  # `ASYNC_RUNTIME` feature
-    # "sqlx-postgres",         # `DATABASE_DRIVER` feature
+    "runtime-tokio-rustls",
+    "sqlx-sqlite",
+    "sqlx-postgres",
 ]
 version = "2.0.0-rc.30"
+
+[dev-dependencies]
+common = { path = "../common" }
+sea-orm = { version = "2.0.0-rc.30", features = ["sqlx-sqlite", "runtime-tokio-rustls", "with-uuid"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }

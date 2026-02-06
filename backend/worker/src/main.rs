@@ -4,11 +4,12 @@ mod github;
 #[cfg(test)]
 mod index_flow_tests;
 mod ports;
+mod sync;
 mod workflows;
 
-use common::db;
-use common::s3::S3Service;
+use common::build_all;
 use common::settings::Settings;
+use common::{Repositories, Services};
 use sea_orm::DatabaseConnection;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -16,31 +17,23 @@ use temporalio_client::ClientOptions;
 use temporalio_common::worker::{WorkerConfig, WorkerTaskTypes, WorkerVersioningStrategy};
 use temporalio_sdk::Worker;
 use temporalio_sdk_core::{init_worker, CoreRuntime, RuntimeOptions, Url};
-use tokio::sync::OnceCell;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-pub struct AppState {
-    pub db: DatabaseConnection,
-    pub s3: S3Service,
-    pub github: github::GithubClient,
+pub struct WorkerContext {
+    pub db: Arc<DatabaseConnection>,
+    pub repos: Repositories,
+    pub services: Services,
+    pub github: Arc<github::GithubClient>,
     pub settings: Arc<Settings>,
 }
-
-impl std::fmt::Debug for AppState {
+impl std::fmt::Debug for WorkerContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AppState")
+        f.debug_struct("WorkerContext")
             .field("db", &self.db)
             .field("settings", &self.settings)
             .field("s3", &"S3Service")
             .field("github", &"GithubClient")
             .finish()
     }
-}
-
-pub static APP_STATE: OnceCell<AppState> = OnceCell::const_new();
-
-pub async fn get_app_state() -> &'static AppState {
-    APP_STATE.get().expect("AppState not initialized")
 }
 
 fn get_host_name() -> String {
@@ -66,7 +59,15 @@ async fn main() -> anyhow::Result<()> {
 
     let db_url = settings.database.url.clone();
 
-    let db = db::establish_connection(&db_url).await?;
+    let db = common::db::establish_connection(&db_url).await?;
+    let db = Arc::new(db);
+
+    let (repos, services) = build_all(db.clone(), &settings).await;
+
+    let github = github::GithubClient::new(
+        settings.github.token.clone(),
+        settings.github.api_url.clone(),
+    );
 
     let s3_bucket = settings.s3.bucket.clone();
     let s3_region = settings.s3.region.clone();
@@ -79,29 +80,31 @@ async fn main() -> anyhow::Result<()> {
         "S3 config loaded"
     );
 
-    let s3 = S3Service::new(
-        s3_bucket,
-        s3_region,
-        s3_endpoint,
-        settings.s3.access_key_id.clone(),
-        settings.s3.secret_access_key.clone(),
-        settings.s3.force_path_style,
-    )
-    .await;
+    let github = Arc::new(github);
+    let settings = Arc::new(settings);
 
-    let github = github::GithubClient::new(
-        settings.github.token.clone(),
-        settings.github.api_url.clone(),
-    );
+    let ctx = Arc::new(WorkerContext {
+        db: Arc::clone(&db),
+        repos,
+        services,
+        github: Arc::clone(&github),
+        settings: Arc::clone(&settings),
+    });
 
-    // Initialize AppState
-    let state = AppState {
-        db,
-        s3,
-        github,
-        settings: Arc::new(settings.clone()),
-    };
-    APP_STATE.set(state).expect("Failed to set AppState");
+    // Create service instances
+    let sync_service = Arc::new(sync::SyncService::new(
+        (*ctx.db).clone(),
+        ctx.services.s3.clone(),
+        ctx.github.clone(),
+        ctx.services.registry_service.clone(),
+    ));
+
+    let discovery = Arc::new(activities::discovery::DiscoveryActivities::new(
+        ctx.db.clone(),
+        ctx.github.clone(),
+    ));
+
+    let sync_activities = Arc::new(activities::sync::SyncActivities::new(sync_service.clone()));
 
     // Temporal Setup
     let server_url = settings.temporal.server_url.clone();
@@ -134,17 +137,37 @@ async fn main() -> anyhow::Result<()> {
     let mut worker = Worker::new_from_core(Arc::new(core_worker), task_queue);
 
     // Register Activities
+    let discovery_clone = Arc::clone(&discovery);
+    worker.register_activity("discovery_activity", move |_ctx, queries| {
+        let discovery = Arc::clone(&discovery_clone);
+        async move { discovery.discover_repos(queries).await }
+    });
+
+    let sync_clone = Arc::clone(&sync_activities);
+    worker.register_activity("fetch_pending_skills_activity", move |_ctx, input| {
+        let sync = Arc::clone(&sync_clone);
+        async move { sync.fetch_pending_skills(input).await }
+    });
+
+    let sync_clone = Arc::clone(&sync_activities);
+    worker.register_activity("sync_single_skill_activity", move |_ctx, registry_id| {
+        let sync = Arc::clone(&sync_clone);
+        async move { sync.sync_single_skill(registry_id).await }
+    });
+
+    let sync_clone = Arc::clone(&sync_activities);
+    worker.register_activity("fetch_repo_snapshot_activity", move |_ctx, registry_id| {
+        let sync = Arc::clone(&sync_clone);
+        async move { sync.fetch_repo_snapshot(registry_id).await }
+    });
+
+    let sync_clone = Arc::clone(&sync_activities);
     worker.register_activity(
-        "discovery_activity",
-        activities::discovery::discovery_activity,
-    );
-    worker.register_activity(
-        "fetch_pending_skills_activity",
-        activities::sync::fetch_pending_skills_activity,
-    );
-    worker.register_activity(
-        "sync_single_skill_activity",
-        activities::sync::sync_single_skill_activity,
+        "apply_sync_from_snapshot_activity",
+        move |_ctx, snapshot| {
+            let sync = Arc::clone(&sync_clone);
+            async move { sync.apply_sync_from_snapshot(snapshot).await }
+        },
     );
 
     // Register Workflows

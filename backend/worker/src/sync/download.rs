@@ -56,3 +56,45 @@ pub fn zip_to_file_map(zip_data: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
 
     Ok(files)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::FileOptions;
+
+    fn create_zip(files: Vec<(&str, &[u8])>) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let options = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            for (path, content) in files {
+                zip.start_file(path, options).unwrap();
+                zip.write_all(content).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn strips_single_root_prefix_like_github_zipball() -> Result<()> {
+        let zip = create_zip(vec![(
+            "repo-sha/skill-a/SKILL.md",
+            b"---\nname: a\ndescription: b\n---\n",
+        )]);
+        let m = zip_to_file_map(&zip)?;
+        assert!(m.contains_key("skill-a/SKILL.md"));
+        assert!(!m.contains_key("repo-sha/skill-a/SKILL.md"));
+        Ok(())
+    }
+
+    #[test]
+    fn does_not_strip_when_multiple_roots_present() -> Result<()> {
+        let zip = create_zip(vec![("a/file.txt", b"x"), ("b/file.txt", b"y")]);
+        let m = zip_to_file_map(&zip)?;
+        assert!(m.contains_key("a/file.txt"));
+        assert!(m.contains_key("b/file.txt"));
+        Ok(())
+    }
+}
