@@ -1,74 +1,94 @@
 # Activity Registration Guide
 
-This guide describes multiple ways to register Activities with the Temporal Rust SDK.
+Use this guide to choose the smallest safe registration pattern for the Temporal Rust SDK prototype.
 
-## Table of Contents
+## Quick decision matrix
 
-1. [Raw API](#raw-api)
-2. [Simplified API (Recommended)](#simplified-api-recommended)
-3. [Macro-Based](#macro-based)
-4. [Full Example](#full-example)
-5. [Best Practices](#best-practices)
+| Option | Choose when | Typical code size | Recommendation |
+| --- | --- | --- | --- |
+| register_activity_json | Input and output are JSON and strongly typed | Small | Default |
+| register_activity macro | You want one line registration for struct methods | Smallest | Use for quick prototypes |
+| raw register_activity | You need custom payload format or low level metadata control | Largest | Use only when required |
 
----
+## Fast selection steps
 
-## Raw API
+1. Start with register_activity_json from src/lib.rs.
+2. Switch to the macro only if the handler is a direct struct method and you want shorter setup.
+3. Move to raw register_activity only when JSON helpers cannot represent your payload or metadata requirements.
 
-The SDK’s raw registration approach requires handling all details manually.
+## Minimal patterns
 
-### When to Use
+### Pattern A: register_activity_json (default)
 
-- Full control over serialization
-- Non-JSON serialization formats
-- Specialized error handling
-
-### Code Example
-
-```rust
+~~~rust
 use std::sync::Arc;
-use std::pin::Pin;
-use std::future::Future;
-use std::collections::HashMap;
-use temporalio_sdk::{ActContext, ActivityError, Worker};
-use temporalio_common::protos::temporal::api::common::v1::Payload;
+use temporal_sdk_helpers::ActivityRegistrarJson;
 
-// 1. Define service (with dependencies)
 #[derive(Clone)]
 struct GreeterService {
     prefix: String,
 }
 
+#[derive(serde::Deserialize)]
+struct GreetInput {
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+struct GreetOutput {
+    message: String,
+}
+
 impl GreeterService {
-    async fn greet(&self, input: GreetInput) -> Result<GreetOutput, ActivityError> {
+    async fn greet(
+        &self,
+        input: GreetInput,
+    ) -> Result<GreetOutput, temporalio_sdk::ActivityError> {
         Ok(GreetOutput {
-            message: format!("{} {}!", self.prefix, input.name),
+            message: format!("{} {}", self.prefix, input.name),
         })
     }
 }
 
-// 2. Register Activity
 let service = Arc::new(GreeterService { prefix: "Hello".to_string() });
-let svc_clone = Arc::clone(&service);
+let svc = Arc::clone(&service);
+worker.register_activity_json("greet", move |_ctx, input: GreetInput| {
+    let svc = Arc::clone(&svc);
+    async move { svc.greet(input).await }
+});
+~~~
 
-worker.register_activity("greet-activity", move |_ctx: ActContext, payload: Payload| {
-    let svc = Arc::clone(&svc_clone);
-    
+### Pattern B: register_activity macro
+
+~~~rust
+use std::sync::Arc;
+use temporal_sdk_helpers::{register_activity, ActivityRegistrarJson};
+
+let service = Arc::new(GreeterService { prefix: "Hello".to_string() });
+register_activity!(worker, "greet", service, greet);
+~~~
+
+### Pattern C: raw register_activity
+
+~~~rust
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use temporalio_common::protos::temporal::api::common::v1::Payload;
+use temporalio_sdk::{ActContext, ActivityError};
+
+worker.register_activity("greet", move |_ctx: ActContext, payload: Payload| {
     Box::pin(async move {
-        // Manual deserialize
-        let input: GreetInput = match serde_json::from_slice(&payload.data) {
-            Ok(i) => i,
-            Err(e) => return Err(ActivityError::from(anyhow!("Deserialize failed: {}", e))),
+        let input: GreetInput = serde_json::from_slice(&payload.data)
+            .map_err(|err| ActivityError::from(anyhow::anyhow!("decode error: {}", err)))?;
+
+        let output = GreetOutput {
+            message: format!("Hello {}", input.name),
         };
 
-        // Call business method
-        let output = svc.greet(input).await?;
+        let data = serde_json::to_vec(&output)
+            .map_err(|err| ActivityError::from(anyhow::anyhow!("encode error: {}", err)))?;
 
-        // Manual serialize
-        let data = serde_json::to_vec(&output).map_err(|e| {
-            ActivityError::from(anyhow!("Serialize failed: {}", e))
-        })?;
-
-        // Build Payload
         Ok(Payload {
             metadata: HashMap::from([(
                 "encoding".to_string(),
@@ -79,363 +99,25 @@ worker.register_activity("greet-activity", move |_ctx: ActContext, payload: Payl
         })
     }) as Pin<Box<dyn Future<Output = Result<Payload, ActivityError>> + Send>>
 });
-```
+~~~
 
-Approximate size: ~25 lines per Activity
+## Rules that prevent most bugs
 
----
+- Keep business side effects inside activities, not workflow code.
+- Use serde compatible structs for helper based registration.
+- Keep payload encoding metadata aligned with actual payload format.
+- Return ActivityError with clear context for decode and encode failures.
+- Register activity names as stable API contracts.
 
-## Simplified API (Recommended)
+## Verification checklist
 
-Use the `ActivityRegistrarJson` trait to automatically handle JSON serialization.
+1. Build example package with cargo check.
+2. Start worker and verify registration logs include expected activity names.
+3. Run starter command and verify workflow result payload can be decoded.
+4. For raw registration, test one malformed payload path and verify error clarity.
 
-### When to Use
+## Related files
 
-- JSON as the serialization format (most cases)
-- Reduce boilerplate
-- Compile-time type safety
-
-### Code Example
-
-```rust
-use temporal_sdk_helpers::ActivityRegistrarJson;
-use std::sync::Arc;
-
-// 1. Define service (same as above)
-#[derive(Clone)]
-struct GreeterService {
-    prefix: String,
-}
-
-impl GreeterService {
-    async fn greet(&self, input: GreetInput) -> Result<GreetOutput, ActivityError> {
-        Ok(GreetOutput {
-            message: format!("{} {}!", self.prefix, input.name),
-        })
-    }
-}
-
-// 2. Register Activity (only 3 lines!)
-let service = Arc::new(GreeterService { prefix: "Hello".to_string() });
-let svc = Arc::clone(&service);
-
-worker.register_activity_json("greet-activity", move |_ctx, input: GreetInput| {
-    let svc = Arc::clone(&svc);
-    async move { svc.greet(input).await }
-});
-```
-
-Size: 3 lines per Activity
-
-### Advantages
-
-- ✅ 88% less boilerplate
-- ✅ Compile-time type safety
-- ✅ Automatic JSON serialization
-- ✅ Easy to maintain
-
----
-
-## Macro-Based
-
-Use the `register_activity!` macro to further simplify registration.
-
-### When to Use
-
-- Rapid prototyping
-- Simple Activity registration
-- No custom context handling
-
-### Code Example
-
-```rust
-use temporal_sdk_helpers::register_activity;
-use std::sync::Arc;
-
-// 1. Define service
-#[derive(Clone)]
-struct GreeterService {
-    prefix: String,
-}
-
-impl GreeterService {
-    async fn greet(&self, input: GreetInput) -> Result<GreetOutput, ActivityError> {
-        Ok(GreetOutput {
-            message: format!("{} {}!", self.prefix, input.name),
-        })
-    }
-    
-    async fn farewell(&self, input: GreetInput) -> Result<GreetOutput, ActivityError> {
-        Ok(GreetOutput {
-            message: format!("Goodbye, {}! {}", input.name, self.prefix),
-        })
-    }
-}
-
-// 2. Register multiple Activities (one per line)
-let service = Arc::new(GreeterService { prefix: "Hello".to_string() });
-
-register_activity!(worker, "greet", service, greet);
-register_activity!(worker, "farewell", service, farewell);
-```
-
-Size: 1 line per Activity
-
-### Macro Definition
-
-```rust
-#[macro_export]
-macro_rules! register_activity {
-    ($worker:expr, $activity_type:expr, $service:expr, $method:ident) => {{
-        let svc = std::sync::Arc::clone(&$service);
-        $worker.register_activity_json($activity_type, move |ctx, input| {
-            let svc = std::sync::Arc::clone(&svc);
-            async move { svc.$method(input).await }
-        });
-    }};
-}
-```
-
----
-
-## Full Example
-
-```rust
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use temporal_sdk_helpers::ActivityRegistrarJson;
-use temporalio_sdk::{ActContext, ActivityError, WfContext, WfExitValue, Worker, WorkflowResult};
-use temporalio_sdk_core::init_worker;
-
-// ============ Data Types ============
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct GreetInput {
-    name: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct GreetOutput {
-    message: String,
-}
-
-// ============ Service Definition ============
-
-#[derive(Clone)]
-struct GreeterService {
-    prefix: String,
-}
-
-impl GreeterService {
-    fn new(prefix: impl Into<String>) -> Self {
-        Self { prefix: prefix.into() }
-    }
-
-    async fn greet(&self, input: GreetInput) -> Result<GreetOutput, ActivityError> {
-        Ok(GreetOutput {
-            message: format!("{} {}!", self.prefix, input.name),
-        })
-    }
-
-    async fn farewell(&self, input: GreetInput) -> Result<GreetOutput, ActivityError> {
-        Ok(GreetOutput {
-            message: format!("Goodbye, {}! {}", input.name, self.prefix),
-        })
-    }
-}
-
-// ============ Workflow ============
-
-const TASK_QUEUE: &str = "greeting-q";
-const GREET_ACTIVITY: &str = "greet";
-const FAREWELL_ACTIVITY: &str = "farewell";
-
-async fn greeting_workflow(ctx: WfContext) -> WorkflowResult<String> {
-    use temporalio_sdk::ActivityOptions;
-    use std::time::Duration;
-    
-    // Build input
-    let input = GreetInput { name: "World".to_string() };
-    
-    // Invoke greet activity
-    let greet_opts = ActivityOptions {
-        activity_type: GREET_ACTIVITY.to_string(),
-        start_to_close_timeout: Some(Duration::from_secs(5)),
-        input: examples_shared::json_payload(&input)?,
-        ..Default::default()
-    };
-    
-    let greet_res = ctx.activity(greet_opts).await;
-    
-    // Handle result...
-    Ok(WfExitValue::Normal("Done".to_string()))
-}
-
-// ============ Worker Startup ============
-
-async fn run_worker() -> Result<()> {
-    // Initialize service
-    let service = Arc::new(GreeterService::new("Hello"));
-
-    // Initialize Temporal Worker (connection code omitted)
-    let mut worker = Worker::new_from_core(..., TASK_QUEUE);
-
-    // Register Activities using the simplified API
-    let svc = Arc::clone(&service);
-    worker.register_activity_json(GREET_ACTIVITY, move |_ctx, input: GreetInput| {
-        let svc = Arc::clone(&svc);
-        async move { svc.greet(input).await }
-    });
-
-    let svc = Arc::clone(&service);
-    worker.register_activity_json(FAREWELL_ACTIVITY, move |_ctx, input: GreetInput| {
-        let svc = Arc::clone(&svc);
-        async move { svc.farewell(input).await }
-    });
-
-    // Register Workflow
-    worker.register_wf("greeting-workflow", greeting_workflow);
-
-    // Start Worker
-    worker.run().await?;
-    Ok(())
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    run_worker().await
-}
-```
-
----
-
-## Best Practices
-
-### 1. Choose the right registration approach
-
-| Scenario | Recommended | Reason |
-|------|---------|------|
-| Standard JSON serialization | Simplified API | Minimal code, type-safe |
-| Rapid prototyping | Macro-Based | Fastest to develop |
-| Custom serialization | Raw API | Full control |
-| Complex dependency injection | Simplified API | Clear dependency handling |
-
-### 2. Service design recommendations
-
-```rust
-// ✅ Recommended: Services hold dependencies as fields
-#[derive(Clone)]
-struct OrderService {
-    db: Arc<Database>,
-    payment_client: Arc<PaymentClient>,
-    config: Config,
-}
-
-impl OrderService {
-    async fn create_order(&self, input: CreateOrderInput) -> Result<Order, ActivityError> {
-        // Use self.db, self.payment_client, etc.
-    }
-}
-
-// ❌ Not recommended: global state
-static DB: Lazy<Database> = Lazy::new(|| Database::new());
-```
-
-### 3. Error handling
-
-```rust
-// ✅ Recommended: use ActivityError
-async fn process(&self, input: Input) -> Result<Output, ActivityError> {
-    // Retryable error
-    if network_failed {
-        return Err(anyhow!("Network error").into()); // Retries by default
-    }
-    
-    // Non-retryable error
-    if invalid_input {
-        return Err(ActivityError::NonRetryable(anyhow!("Invalid input")));
-    }
-    
-    Ok(output)
-}
-```
-
-### 4. Input/Output types
-
-```rust
-// ✅ Recommended: use explicit input/output types
-#[derive(Serialize, Deserialize)]
-struct CreateOrderInput {
-    user_id: String,
-    items: Vec<LineItem>,
-    shipping_address: Address,
-}
-
-#[derive(Serialize, Deserialize)]
-struct CreateOrderOutput {
-    order_id: String,
-    total: Money,
-    status: OrderStatus,
-}
-
-// ❌ Not recommended: use generic types
-async fn process(&self, json: String) -> Result<String, ActivityError> {
-    // Loses type safety
-}
-```
-
-### 5. Registering multiple Activities
-
-```rust
-// Recommended: register centrally
-fn register_activities(worker: &mut Worker, service: Arc<MyService>) {
-    // Order-related
-    let svc = Arc::clone(&service);
-    worker.register_activity_json("create-order", move |ctx, input| {
-        let svc = Arc::clone(&svc);
-        async move { svc.create_order(input).await }
-    });
-
-    let svc = Arc::clone(&service);
-    worker.register_activity_json("cancel-order", move |ctx, input| {
-        let svc = Arc::clone(&svc);
-        async move { svc.cancel_order(input).await }
-    });
-
-    // Payment-related
-    let svc = Arc::clone(&service);
-    worker.register_activity_json("process-payment", move |ctx, input| {
-        let svc = Arc::clone(&svc);
-        async move { svc.process_payment(input).await }
-    });
-}
-```
-
----
-
-## Summary
-
-| Approach | Lines of Code | Use Case | Recommendation |
-|------|-------|---------|-------|
-| Raw API | ~25 lines | Full control | ⭐⭐ |
-| Simplified API | 3 lines | Standard cases | ⭐⭐⭐⭐⭐ |
-| Macro-Based | 1 line | Rapid development | ⭐⭐⭐⭐ |
-
-**Core API:**
-
-```rust
-use temporal_sdk_helpers::ActivityRegistrarJson;
-
-let svc = Arc::clone(&service);
-worker.register_activity_json("activity-name", move |ctx, input: InputType| {
-    let svc = Arc::clone(&svc);
-    async move { svc.method(input).await }
-});
-```
-
-**Advantages:**
-- 88% less boilerplate
-- Compile-time type safety
-- Automatic JSON serialization
-- Dependency injection support
+- reference/ACTIVITY.md
+- src/lib.rs
+- examples/struct-activity
