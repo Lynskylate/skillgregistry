@@ -71,14 +71,13 @@ jobs:
         env:
           SKILLREGISTRY_DATABASE__URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
           SKILLREGISTRY_GITHUB__TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DATABASE_URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
-          S3_ENDPOINT: http://localhost:9000
-          S3_BUCKET: skills
-          S3_REGION: us-east-1
-          S3_FORCE_PATH_STYLE: "true"
-          AWS_ACCESS_KEY_ID: rustfsadmin
-          AWS_SECRET_ACCESS_KEY: rustfsadmin
-          TEMPORAL_SERVER_URL: http://localhost:7233
+          SKILLREGISTRY_S3__ENDPOINT: http://localhost:9000
+          SKILLREGISTRY_S3__BUCKET: skills
+          SKILLREGISTRY_S3__REGION: us-east-1
+          SKILLREGISTRY_S3__FORCE_PATH_STYLE: "true"
+          SKILLREGISTRY_S3__ACCESS_KEY_ID: rustfsadmin
+          SKILLREGISTRY_S3__SECRET_ACCESS_KEY: rustfsadmin
+          SKILLREGISTRY_TEMPORAL__SERVER_URL: http://localhost:7233
           SKILLREGISTRY_SETUP_SKIP_TEMPORAL: "true"
           RUST_LOG: info
         run: cargo run --bin setup
@@ -88,15 +87,14 @@ jobs:
         env:
           SKILLREGISTRY_DATABASE__URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
           SKILLREGISTRY_GITHUB__TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DATABASE_URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
-          S3_ENDPOINT: http://localhost:9000
-          S3_BUCKET: skills
-          S3_REGION: us-east-1
-          S3_FORCE_PATH_STYLE: "true"
-          AWS_ACCESS_KEY_ID: rustfsadmin
-          AWS_SECRET_ACCESS_KEY: rustfsadmin
-          TEMPORAL_SERVER_URL: http://localhost:7233
-          SKILLREGISTRY_TEMPORAL_TASK_QUEUE: skill-registry-queue
+          SKILLREGISTRY_S3__ENDPOINT: http://localhost:9000
+          SKILLREGISTRY_S3__BUCKET: skills
+          SKILLREGISTRY_S3__REGION: us-east-1
+          SKILLREGISTRY_S3__FORCE_PATH_STYLE: "true"
+          SKILLREGISTRY_S3__ACCESS_KEY_ID: rustfsadmin
+          SKILLREGISTRY_S3__SECRET_ACCESS_KEY: rustfsadmin
+          SKILLREGISTRY_TEMPORAL__SERVER_URL: http://localhost:7233
+          SKILLREGISTRY_TEMPORAL__TASK_QUEUE: skill-registry-queue
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUST_LOG: info
         run: |
@@ -108,15 +106,15 @@ jobs:
       - name: Run E2E test (discovery + upload)
         working-directory: ./backend
         env:
-          DATABASE_URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
-          TEMPORAL_SERVER_URL: http://localhost:7233
-          SKILLREGISTRY_TEMPORAL_TASK_QUEUE: skill-registry-queue
-          S3_ENDPOINT: http://localhost:9000
-          S3_BUCKET: skills
-          S3_REGION: us-east-1
-          S3_FORCE_PATH_STYLE: "true"
-          AWS_ACCESS_KEY_ID: rustfsadmin
-          AWS_SECRET_ACCESS_KEY: rustfsadmin
+          SKILLREGISTRY_DATABASE__URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
+          SKILLREGISTRY_TEMPORAL__SERVER_URL: http://localhost:7233
+          SKILLREGISTRY_TEMPORAL__TASK_QUEUE: skill-registry-queue
+          SKILLREGISTRY_S3__ENDPOINT: http://localhost:9000
+          SKILLREGISTRY_S3__BUCKET: skills
+          SKILLREGISTRY_S3__REGION: us-east-1
+          SKILLREGISTRY_S3__FORCE_PATH_STYLE: "true"
+          SKILLREGISTRY_S3__ACCESS_KEY_ID: rustfsadmin
+          SKILLREGISTRY_S3__SECRET_ACCESS_KEY: rustfsadmin
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           E2E_DISCOVERY_QUERY: repo:anthropics/skills
           E2E_TARGET_OWNER: anthropics
