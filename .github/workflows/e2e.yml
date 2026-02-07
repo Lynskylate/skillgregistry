@@ -71,6 +71,7 @@ jobs:
         env:
           SKILLREGISTRY_DATABASE__URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
           SKILLREGISTRY_GITHUB__TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKILLREGISTRY_GITHUB__SEARCH_KEYWORDS: repo:anthropics/skills
           SKILLREGISTRY_S3__ENDPOINT: http://localhost:9000
           SKILLREGISTRY_S3__BUCKET: skills
           SKILLREGISTRY_S3__REGION: us-east-1
@@ -87,6 +88,7 @@ jobs:
         env:
           SKILLREGISTRY_DATABASE__URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
           SKILLREGISTRY_GITHUB__TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKILLREGISTRY_GITHUB__SEARCH_KEYWORDS: repo:anthropics/skills
           SKILLREGISTRY_S3__ENDPOINT: http://localhost:9000
           SKILLREGISTRY_S3__BUCKET: skills
           SKILLREGISTRY_S3__REGION: us-east-1

@@ -75,7 +75,10 @@ impl E2eConfig {
                 "SKILLREGISTRY_DATABASE__URL",
                 "sqlite:///tmp/skillregistry-e2e.db?mode=rwc",
             ),
-            temporal_server_url: env_or("SKILLREGISTRY_TEMPORAL__SERVER_URL", "http://localhost:7233"),
+            temporal_server_url: env_or(
+                "SKILLREGISTRY_TEMPORAL__SERVER_URL",
+                "http://localhost:7233",
+            ),
             temporal_task_queue: env_or(
                 "SKILLREGISTRY_TEMPORAL__TASK_QUEUE",
                 "skill-registry-queue",
