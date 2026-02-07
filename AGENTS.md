@@ -37,6 +37,10 @@ cd backend/worker
 cargo test
 ```
 
+### Docker Shortcuts
+- Common Docker commands: [`docs/DOCKER_COMMANDS.md`](docs/DOCKER_COMMANDS.md)
+- Make targets for daily Docker workflows: [`Makefile`](Makefile)
+
 ### Add New Features
 - Database changes: modify models in `backend/common/src/entities/`.
 - API changes: add handler functions in `backend/api/src/handlers.rs`.

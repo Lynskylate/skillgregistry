@@ -1918,7 +1918,7 @@ async fn issue_tokens_and_set_cookie(
     state: &Arc<AppState>,
     user_id: Uuid,
     role: String,
-    rotated_from: Option<i64>,
+    rotated_from: Option<i32>,
 ) -> (CookieJar, Json<ApiResponse<LoginResponse>>) {
     let db = state.db.as_ref();
     let now = Utc::now();
@@ -1980,14 +1980,15 @@ async fn issue_tokens_and_set_cookie(
 
     let _token_model = match token_am.insert(db).await {
         Ok(t) => t,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!("Failed to create refresh token: {}", e);
             return (
                 CookieJar::new(),
                 Json(ApiResponse::error(
                     500,
                     "failed to create refresh token".to_string(),
                 )),
-            )
+            );
         }
     };
 
