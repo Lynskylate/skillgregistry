@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -30,12 +28,19 @@ services:
     image: temporalio/temporal:latest
     container_name: temporal
     command: server start-dev --ip 0.0.0.0 --db-filename /tmp/temporal.db
+    ports:
+      - "7233:7233"
 
   skillregistry-backend:
+    image: skillregistry-backend-runtime:local
     build:
       context: ./backend
       dockerfile: Dockerfile
       network: host
+      cache_from:
+        - type=local,src=.buildx-cache/backend
+      cache_to:
+        - type=local,dest=.buildx-cache/backend,mode=max
       args:
         - RUST_VERSION=1.93.0-bookworm
     command: ["/app/api"]
@@ -60,12 +65,7 @@ services:
         condition: service_started
 
   skillregistry-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-      network: host
-      args:
-        - RUST_VERSION=1.93.0-bookworm
+    image: skillregistry-backend-runtime:local
     command: ["/app/worker"]
     environment:
       - SKILLREGISTRY_DATABASE__URL=postgres://postgres:password@postgres:5432/skillregistry
@@ -88,12 +88,7 @@ services:
         condition: service_started
 
   skillregistry-setup:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-      network: host
-      args:
-        - RUST_VERSION=1.93.0-bookworm
+    image: skillregistry-backend-runtime:local
     command: ["/app/setup"]
     environment:
       - SKILLREGISTRY_DATABASE__URL=postgres://postgres:password@postgres:5432/skillregistry

@@ -5,12 +5,15 @@ use aws_sdk_s3::Client as S3Client;
 use chrono::{NaiveDateTime, Utc};
 use common::entities::{
     plugin_versions, plugins,
-    prelude::{PluginVersions, Plugins, SkillRegistry, SkillVersions, Skills},
+    prelude::{DiscoveryRegistries, PluginVersions, Plugins, SkillRegistry, SkillVersions, Skills},
     skill_registry, skill_versions, skills,
 };
-use sea_orm::{ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
-use serde::Serialize;
-use std::collections::HashMap;
+use reqwest::StatusCode;
+use sea_orm::{
+    ColumnTrait, Database, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::time::Duration;
 use temporalio_client::{ClientOptions, WorkflowClientTrait, WorkflowOptions};
@@ -25,9 +28,16 @@ struct E2eConfig {
     database_url: String,
     temporal_server_url: String,
     temporal_task_queue: String,
+    api_base_url: String,
+    admin_username: String,
+    admin_password: String,
     discovery_query: String,
     target_owner: String,
     target_repo: String,
+    query_recent_skill_raw: String,
+    query_marketplace_raw: String,
+    query_poll_timeout: Duration,
+    baseline_discovery_registry_count: usize,
     discovery_timeout: Duration,
     sync_timeout: Duration,
     s3_bucket: String,
@@ -83,9 +93,23 @@ impl E2eConfig {
                 "SKILLREGISTRY_TEMPORAL__TASK_QUEUE",
                 "skill-registry-queue",
             ),
+            api_base_url: env_or("E2E_API_BASE_URL", "http://localhost:3000"),
+            admin_username: env_or("E2E_ADMIN_USERNAME", "admin"),
+            admin_password: env_or("E2E_ADMIN_PASSWORD", "admin"),
             discovery_query,
             target_owner,
             target_repo,
+            query_recent_skill_raw: env_or(
+                "E2E_QUERY_RECENT_SKILL_RAW",
+                "path:**/SKILL.md --- \"name:\" \"description:\" NOT is:fork",
+            ),
+            query_marketplace_raw: env_or(
+                "E2E_QUERY_MARKETPLACE_RAW",
+                "path:.claude-plugin/marketplace.json NOT is:fork",
+            ),
+            query_poll_timeout: Duration::from_secs(env_u64("E2E_QUERY_POLL_TIMEOUT_SECS", 900)),
+            baseline_discovery_registry_count: env_u64("E2E_BASELINE_DISCOVERY_REGISTRY_COUNT", 1)
+                as usize,
             discovery_timeout: Duration::from_secs(env_u64("E2E_DISCOVERY_TIMEOUT_SECS", 240)),
             sync_timeout: Duration::from_secs(env_u64("E2E_SYNC_TIMEOUT_SECS", 900)),
             s3_bucket: env_or("SKILLREGISTRY_S3__BUCKET", "skills"),
@@ -111,6 +135,43 @@ struct UploadedArtifact {
     version: String,
     s3_key: String,
     created_at: NaiveDateTime,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiEnvelope<T> {
+    code: i32,
+    message: String,
+    data: Option<T>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginResponse {
+    access_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscoveryRegistryDto {
+    id: i32,
+    queries: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TriggerWorkflowDto {
+    workflow_id: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct SkillListItemDto {
+    name: String,
+    owner: String,
+    repo: String,
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+struct SkillKey {
+    owner: String,
+    repo: String,
+    name: String,
 }
 
 #[tokio::test]
@@ -192,6 +253,665 @@ async fn test_discovery_sync_and_upload() -> Result<()> {
     assert_s3_object_exists(&cfg, &artifact.s3_key).await?;
 
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires API, worker, Temporal, RustFS/S3, SQLite, and a valid GITHUB_TOKEN"]
+async fn test_admin_registry_trigger_and_index_two_queries() -> Result<()> {
+    let cfg = E2eConfig::from_env()?;
+    let db = Database::connect(&cfg.database_url)
+        .await
+        .context("failed to connect to sqlite database")?;
+
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .context("failed to build HTTP client")?;
+
+    wait_for_min_discovery_registry_count(
+        &db,
+        cfg.baseline_discovery_registry_count,
+        cfg.query_poll_timeout,
+    )
+    .await?;
+
+    assert_admin_endpoint_requires_auth(&client, &cfg).await?;
+
+    let non_admin_token = register_local_user_and_get_token(&client, &cfg).await?;
+    assert_non_admin_forbidden(&client, &cfg, &non_admin_token).await?;
+
+    let admin_token = login_admin_and_get_token(&client, &cfg).await?;
+
+    let normalized_recent_query = normalize_query_for_api(&cfg.query_recent_skill_raw, true);
+    let normalized_marketplace_query = normalize_query_for_api(&cfg.query_marketplace_raw, false);
+
+    println!("Normalized recent query: {}", normalized_recent_query);
+    println!(
+        "Normalized marketplace query: {}",
+        normalized_marketplace_query
+    );
+
+    let recent_registry = create_discovery_registry_via_admin_api(
+        &client,
+        &cfg,
+        &admin_token,
+        vec![normalized_recent_query.clone()],
+    )
+    .await?;
+
+    let expected_recent_query = vec![normalize_query_for_api(&normalized_recent_query, false)];
+    if recent_registry.queries != expected_recent_query {
+        bail!(
+            "recent registry stored unexpected query list: {:?}",
+            recent_registry.queries
+        );
+    }
+
+    let recent_triggered_at = Utc::now().naive_utc();
+    let recent_trigger =
+        trigger_discovery_registry_via_admin_api(&client, &cfg, &admin_token, recent_registry.id)
+            .await?;
+    println!(
+        "Triggered recent query registry id={} workflow_id={}",
+        recent_registry.id, recent_trigger.workflow_id
+    );
+
+    wait_for_registry_run(
+        &db,
+        recent_registry.id,
+        recent_triggered_at,
+        cfg.query_poll_timeout,
+    )
+    .await?;
+    wait_for_registry_repo_count(&db, recent_registry.id, 1, cfg.query_poll_timeout).await?;
+
+    let marketplace_registry = create_discovery_registry_via_admin_api(
+        &client,
+        &cfg,
+        &admin_token,
+        vec![normalized_marketplace_query.clone()],
+    )
+    .await?;
+
+    let expected_marketplace_query = vec![normalize_query_for_api(
+        &normalized_marketplace_query,
+        false,
+    )];
+    if marketplace_registry.queries != expected_marketplace_query {
+        bail!(
+            "marketplace registry stored unexpected query list: {:?}",
+            marketplace_registry.queries
+        );
+    }
+
+    let marketplace_triggered_at = Utc::now().naive_utc();
+    let marketplace_trigger = trigger_discovery_registry_via_admin_api(
+        &client,
+        &cfg,
+        &admin_token,
+        marketplace_registry.id,
+    )
+    .await?;
+    println!(
+        "Triggered marketplace query registry id={} workflow_id={}",
+        marketplace_registry.id, marketplace_trigger.workflow_id
+    );
+
+    wait_for_registry_run(
+        &db,
+        marketplace_registry.id,
+        marketplace_triggered_at,
+        cfg.query_poll_timeout,
+    )
+    .await?;
+    wait_for_registry_repo_count(&db, marketplace_registry.id, 1, cfg.query_poll_timeout).await?;
+
+    let marketplace_repo_count = count_registry_repos(&db, marketplace_registry.id).await?;
+    if marketplace_repo_count < 1 {
+        bail!(
+            "marketplace query registry id={} indexed no repositories",
+            marketplace_registry.id
+        );
+    }
+
+    let db_skills = wait_for_db_indexed_skills(&db, cfg.query_poll_timeout).await?;
+    let api_skills = fetch_all_skills_from_api(&client, &cfg).await?;
+
+    let db_set: HashSet<SkillKey> = db_skills.into_iter().collect();
+    let api_set: HashSet<SkillKey> = api_skills.clone().into_iter().collect();
+
+    if db_set != api_set {
+        bail!(
+            "API /api/skills mismatch with DB indexed skills: db_count={}, api_count={}",
+            db_set.len(),
+            api_set.len()
+        );
+    }
+
+    let page_size = 20;
+    let first_page_api = fetch_skills_page_from_api(&client, &cfg, 1, page_size).await?;
+    if first_page_api.is_empty() {
+        bail!("index API first page is empty after trigger workflow");
+    }
+
+    for key in &first_page_api {
+        if !db_set.contains(key) {
+            bail!(
+                "index page item not found in DB snapshot: {}/{}/{}",
+                key.owner,
+                key.repo,
+                key.name
+            );
+        }
+    }
+
+    if api_skills.len() > page_size as usize {
+        let second_page_api = fetch_skills_page_from_api(&client, &cfg, 2, page_size).await?;
+        for key in &second_page_api {
+            if !db_set.contains(key) {
+                bail!(
+                    "index page 2 item not found in DB snapshot: {}/{}/{}",
+                    key.owner,
+                    key.repo,
+                    key.name
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn assert_admin_endpoint_requires_auth(
+    client: &reqwest::Client,
+    cfg: &E2eConfig,
+) -> Result<()> {
+    let response = client
+        .get(format!(
+            "{}/api/admin/discovery-registries",
+            cfg.api_base_url
+        ))
+        .send()
+        .await
+        .context("failed to call admin endpoint without auth")?;
+
+    let (status, envelope): (StatusCode, ApiEnvelope<serde_json::Value>) =
+        parse_api_envelope(response, "admin list without auth").await?;
+
+    if status != StatusCode::UNAUTHORIZED || envelope.code != 401 {
+        bail!(
+            "expected unauthenticated admin call to fail with HTTP 401/code 401, got HTTP {} code {} message '{}'",
+            status,
+            envelope.code,
+            envelope.message
+        );
+    }
+
+    Ok(())
+}
+
+async fn register_local_user_and_get_token(
+    client: &reqwest::Client,
+    cfg: &E2eConfig,
+) -> Result<String> {
+    let suffix = Uuid::new_v4().simple().to_string();
+    let username = format!("e2e-user-{}", &suffix[..12]);
+    let password = format!("P@ssw0rd-{}", &suffix[..12]);
+    let email = format!("{}@example.com", username);
+
+    let response = client
+        .post(format!("{}/api/auth/register", cfg.api_base_url))
+        .json(&serde_json::json!({
+            "username": username,
+            "password": password,
+            "email": email,
+            "display_name": "E2E User"
+        }))
+        .send()
+        .await
+        .context("failed to register local non-admin test user")?;
+
+    let (_status, envelope): (StatusCode, ApiEnvelope<LoginResponse>) =
+        parse_api_envelope(response, "register non-admin user").await?;
+
+    let login = require_api_success(envelope, "register non-admin user")?;
+    Ok(login.access_token)
+}
+
+async fn assert_non_admin_forbidden(
+    client: &reqwest::Client,
+    cfg: &E2eConfig,
+    token: &str,
+) -> Result<()> {
+    let response = client
+        .get(format!(
+            "{}/api/admin/discovery-registries",
+            cfg.api_base_url
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .context("failed to call admin endpoint as non-admin")?;
+
+    let (_status, envelope): (StatusCode, ApiEnvelope<serde_json::Value>) =
+        parse_api_envelope(response, "admin list as non-admin").await?;
+
+    if envelope.code != 403 {
+        bail!(
+            "expected non-admin access denial code=403, got code={} message='{}'",
+            envelope.code,
+            envelope.message
+        );
+    }
+
+    Ok(())
+}
+
+async fn login_admin_and_get_token(client: &reqwest::Client, cfg: &E2eConfig) -> Result<String> {
+    let response = client
+        .post(format!("{}/api/auth/login", cfg.api_base_url))
+        .json(&serde_json::json!({
+            "identifier": cfg.admin_username,
+            "password": cfg.admin_password
+        }))
+        .send()
+        .await
+        .context("failed to login as admin")?;
+
+    let (_status, envelope): (StatusCode, ApiEnvelope<LoginResponse>) =
+        parse_api_envelope(response, "admin login").await?;
+
+    let login = require_api_success(envelope, "admin login")?;
+    Ok(login.access_token)
+}
+
+async fn create_discovery_registry_via_admin_api(
+    client: &reqwest::Client,
+    cfg: &E2eConfig,
+    admin_token: &str,
+    queries: Vec<String>,
+) -> Result<DiscoveryRegistryDto> {
+    let response = client
+        .post(format!(
+            "{}/api/admin/discovery-registries",
+            cfg.api_base_url
+        ))
+        .bearer_auth(admin_token)
+        .json(&serde_json::json!({
+            "platform": "github",
+            "token": std::env::var("GITHUB_TOKEN").unwrap_or_default(),
+            "queries": queries,
+            "schedule_interval_seconds": 3600
+        }))
+        .send()
+        .await
+        .context("failed to create discovery registry via admin API")?;
+
+    let (_status, envelope): (StatusCode, ApiEnvelope<DiscoveryRegistryDto>) =
+        parse_api_envelope(response, "create discovery registry").await?;
+
+    require_api_success(envelope, "create discovery registry")
+}
+
+async fn trigger_discovery_registry_via_admin_api(
+    client: &reqwest::Client,
+    cfg: &E2eConfig,
+    admin_token: &str,
+    registry_id: i32,
+) -> Result<TriggerWorkflowDto> {
+    let response = client
+        .post(format!(
+            "{}/api/admin/discovery-registries/{}/trigger",
+            cfg.api_base_url, registry_id
+        ))
+        .bearer_auth(admin_token)
+        .send()
+        .await
+        .with_context(|| format!("failed to trigger discovery registry id={}", registry_id))?;
+
+    let (_status, envelope): (StatusCode, ApiEnvelope<TriggerWorkflowDto>) =
+        parse_api_envelope(response, "trigger discovery registry").await?;
+
+    require_api_success(envelope, "trigger discovery registry")
+}
+
+async fn wait_for_registry_run(
+    db: &DatabaseConnection,
+    registry_id: i32,
+    triggered_at: NaiveDateTime,
+    timeout: Duration,
+) -> Result<()> {
+    let started = Instant::now();
+    loop {
+        let model = DiscoveryRegistries::find_by_id(registry_id)
+            .one(db)
+            .await?
+            .ok_or_else(|| anyhow!("discovery registry id={} not found", registry_id))?;
+
+        if let Some(last_run_at) = model.last_run_at {
+            if last_run_at >= triggered_at {
+                return Ok(());
+            }
+        }
+
+        if started.elapsed() > timeout {
+            bail!(
+                "timed out waiting for discovery registry id={} run completion",
+                registry_id
+            );
+        }
+
+        sleep(Duration::from_secs(3)).await;
+    }
+}
+
+async fn wait_for_registry_repo_count(
+    db: &DatabaseConnection,
+    registry_id: i32,
+    min_count: usize,
+    timeout: Duration,
+) -> Result<()> {
+    let started = Instant::now();
+    loop {
+        let count = count_registry_repos(db, registry_id).await?;
+        if count >= min_count {
+            return Ok(());
+        }
+
+        if started.elapsed() > timeout {
+            bail!(
+                "timed out waiting for registry id={} to index at least {} repos",
+                registry_id,
+                min_count
+            );
+        }
+
+        sleep(Duration::from_secs(3)).await;
+    }
+}
+
+async fn wait_for_min_discovery_registry_count(
+    db: &DatabaseConnection,
+    min_count: usize,
+    timeout: Duration,
+) -> Result<()> {
+    let started = Instant::now();
+
+    loop {
+        let current = DiscoveryRegistries::find().all(db).await?.len();
+        if current >= min_count {
+            return Ok(());
+        }
+
+        if started.elapsed() > timeout {
+            bail!(
+                "timed out waiting for at least {} discovery registries, current={}",
+                min_count,
+                current
+            );
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn count_registry_repos(db: &DatabaseConnection, registry_id: i32) -> Result<usize> {
+    let repos = SkillRegistry::find()
+        .filter(skill_registry::Column::DiscoveryRegistryId.eq(registry_id))
+        .filter(skill_registry::Column::Status.ne("blacklisted"))
+        .all(db)
+        .await?;
+
+    Ok(repos.len())
+}
+
+async fn wait_for_db_indexed_skills(
+    db: &DatabaseConnection,
+    timeout: Duration,
+) -> Result<Vec<SkillKey>> {
+    let started = Instant::now();
+    loop {
+        let keys = fetch_all_db_skill_keys(db).await?;
+        if !keys.is_empty() {
+            return Ok(keys);
+        }
+
+        if started.elapsed() > timeout {
+            bail!("timed out waiting for indexed skills to appear in DB");
+        }
+
+        sleep(Duration::from_secs(3)).await;
+    }
+}
+
+async fn fetch_all_db_skill_keys(db: &DatabaseConnection) -> Result<Vec<SkillKey>> {
+    let mut page = 1;
+    let per_page = 200;
+    let mut out = Vec::new();
+
+    loop {
+        let items = fetch_db_skill_page(db, page, per_page).await?;
+        if items.is_empty() {
+            break;
+        }
+        let len = items.len();
+        out.extend(items);
+        if len < per_page as usize {
+            break;
+        }
+        page += 1;
+    }
+
+    Ok(out)
+}
+
+async fn fetch_db_skill_page(
+    db: &DatabaseConnection,
+    page: u64,
+    per_page: u64,
+) -> Result<Vec<SkillKey>> {
+    let query = Skills::find()
+        .filter(skills::Column::IsActive.eq(1))
+        .find_also_related(SkillRegistry)
+        .filter(skill_registry::Column::Status.ne("blacklisted"))
+        .order_by_desc(skills::Column::CreatedAt);
+
+    let paginator = query.paginate(db, per_page);
+    let rows = paginator.fetch_page(page.saturating_sub(1)).await?;
+
+    let mut out = Vec::new();
+    for (skill, registry_opt) in rows {
+        if let Some(registry) = registry_opt {
+            out.push(SkillKey {
+                owner: registry.owner,
+                repo: registry.name,
+                name: skill.name,
+            });
+        }
+    }
+
+    Ok(out)
+}
+
+async fn fetch_all_skills_from_api(
+    client: &reqwest::Client,
+    cfg: &E2eConfig,
+) -> Result<Vec<SkillKey>> {
+    let mut page = 1;
+    let per_page = 200;
+    let mut out = Vec::new();
+
+    loop {
+        let items = fetch_skills_page_from_api(client, cfg, page, per_page).await?;
+        if items.is_empty() {
+            break;
+        }
+        let len = items.len();
+        out.extend(items);
+        if len < per_page as usize {
+            break;
+        }
+        page += 1;
+    }
+
+    Ok(out)
+}
+
+async fn fetch_skills_page_from_api(
+    client: &reqwest::Client,
+    cfg: &E2eConfig,
+    page: u64,
+    per_page: u64,
+) -> Result<Vec<SkillKey>> {
+    let response = client
+        .get(format!("{}/api/skills", cfg.api_base_url))
+        .query(&[
+            ("page", page.to_string()),
+            ("per_page", per_page.to_string()),
+        ])
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "failed to fetch /api/skills page={} per_page={}",
+                page, per_page
+            )
+        })?;
+
+    let (_status, envelope): (StatusCode, ApiEnvelope<Vec<SkillListItemDto>>) =
+        parse_api_envelope(response, "list skills").await?;
+
+    let items = require_api_success(envelope, "list skills")?;
+
+    Ok(items
+        .into_iter()
+        .map(|item| SkillKey {
+            owner: item.owner,
+            repo: item.repo,
+            name: item.name,
+        })
+        .collect())
+}
+
+async fn parse_api_envelope<T: DeserializeOwned>(
+    response: reqwest::Response,
+    context: &str,
+) -> Result<(StatusCode, ApiEnvelope<T>)> {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .with_context(|| format!("{}: failed to read response body", context))?;
+
+    let envelope = serde_json::from_str::<ApiEnvelope<T>>(&body).with_context(|| {
+        format!(
+            "{}: response is not a valid ApiResponse payload. body={}",
+            context, body
+        )
+    })?;
+
+    Ok((status, envelope))
+}
+
+fn require_api_success<T>(envelope: ApiEnvelope<T>, context: &str) -> Result<T> {
+    if envelope.code != 200 {
+        bail!(
+            "{} failed with api code {} and message '{}'",
+            context,
+            envelope.code,
+            envelope.message
+        );
+    }
+
+    envelope
+        .data
+        .ok_or_else(|| anyhow!("{} returned success but no data payload", context))
+}
+
+fn normalize_query_for_api(raw: &str, add_recent_sort: bool) -> String {
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    let mut normalized = Vec::new();
+    let mut idx = 0;
+    let mut saw_code_qualifier = false;
+
+    while idx < tokens.len() {
+        let token = tokens[idx];
+
+        if token == "---" {
+            idx += 1;
+            continue;
+        }
+
+        if token.to_ascii_lowercase().starts_with("path:")
+            || token.to_ascii_lowercase().starts_with("filename:")
+            || token.to_ascii_lowercase().starts_with("extension:")
+        {
+            saw_code_qualifier = true;
+        }
+
+        if let Some(path_glob) = token.strip_prefix("path:**/") {
+            saw_code_qualifier = true;
+            normalized.push(format!("path:{}", path_glob));
+            idx += 1;
+            continue;
+        }
+
+        if token.eq_ignore_ascii_case("NOT")
+            && idx + 1 < tokens.len()
+            && tokens[idx + 1].eq_ignore_ascii_case("is:fork")
+        {
+            if !saw_code_qualifier
+                && !normalized
+                    .iter()
+                    .any(|t: &String| t.eq_ignore_ascii_case("fork:false"))
+            {
+                normalized.push("fork:false".to_string());
+            }
+            idx += 2;
+            continue;
+        }
+
+        if token.eq_ignore_ascii_case("-is:fork") {
+            if !saw_code_qualifier
+                && !normalized
+                    .iter()
+                    .any(|t: &String| t.eq_ignore_ascii_case("fork:false"))
+            {
+                normalized.push("fork:false".to_string());
+            }
+            idx += 1;
+            continue;
+        }
+
+        normalized.push(token.to_string());
+        idx += 1;
+    }
+
+    let is_code_search = saw_code_qualifier
+        || normalized.iter().any(|t| {
+            let lower = t.to_ascii_lowercase();
+            lower.starts_with("path:")
+                || lower.starts_with("filename:")
+                || lower.starts_with("extension:")
+        });
+
+    let has_fork_filter = normalized
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case("fork:false") || t.eq_ignore_ascii_case("fork:true"));
+    if !is_code_search && !has_fork_filter {
+        normalized.push("fork:false".to_string());
+    }
+
+    if add_recent_sort
+        && !is_code_search
+        && !normalized
+            .iter()
+            .any(|t| t.to_ascii_lowercase().starts_with("sort:"))
+    {
+        normalized.push("sort:updated".to_string());
+    }
+
+    normalized.join(" ")
 }
 
 async fn connect_temporal(

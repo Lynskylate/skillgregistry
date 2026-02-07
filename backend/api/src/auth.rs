@@ -1980,14 +1980,15 @@ async fn issue_tokens_and_set_cookie(
 
     let _token_model = match token_am.insert(db).await {
         Ok(t) => t,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!("Failed to create refresh token: {}", e);
             return (
                 CookieJar::new(),
                 Json(ApiResponse::error(
                     500,
                     "failed to create refresh token".to_string(),
                 )),
-            )
+            );
         }
     };
 

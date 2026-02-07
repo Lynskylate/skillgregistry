@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react"
-import { Link, useNavigate } from "react-router-dom"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { api } from "@/lib/api"
 import type { ApiResponse } from "@/lib/types"
 import { setAccessToken } from "@/lib/auth"
+import { useAuth } from "@/contexts/AuthContext"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -21,6 +22,8 @@ type SsoLookupItem = {
 
 export default function Login() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const { refreshAuth } = useAuth()
   const [identifier, setIdentifier] = useState("")
   const [password, setPassword] = useState("")
   const [submitting, setSubmitting] = useState(false)
@@ -29,6 +32,9 @@ export default function Login() {
   const [ssoEmail, setSsoEmail] = useState("")
   const [ssoItems, setSsoItems] = useState<SsoLookupItem[] | null>(null)
   const [ssoLoading, setSsoLoading] = useState(false)
+  const redirectPath = searchParams.get("redirect") || "/"
+  const requiresAdmin = searchParams.get("reason") === "admin_required"
+
   const ssoError = useMemo(() => {
     if (ssoItems && ssoItems.length === 0) return "SSO is not configured for this email domain."
     return null
@@ -45,7 +51,8 @@ export default function Login() {
       const token = res.data.data?.access_token
       if (!token) throw new Error("missing token")
       setAccessToken(token)
-      navigate("/")
+      await refreshAuth()
+      navigate(redirectPath)
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Sign-in failed.")
     } finally {
@@ -83,6 +90,11 @@ export default function Login() {
           <CardTitle>Sign in</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
+          {requiresAdmin && (
+            <div className="rounded border border-zinc-300 bg-zinc-50 p-3 text-sm">
+              Admin access is required to open that page.
+            </div>
+          )}
           <div className="space-y-3">
             <div className="space-y-2">
               <div className="text-sm text-muted-foreground">Username / Email</div>
