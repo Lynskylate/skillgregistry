@@ -40,9 +40,14 @@ SKILLREGISTRY_GITHUB__TOKEN=your_github_token
 SKILLREGISTRY_S3__ACCESS_KEY_ID=your_key
 SKILLREGISTRY_S3__SECRET_ACCESS_KEY=your_secret
 SKILLREGISTRY_S3__REGION=us-east-1
+SKILLREGISTRY_DEBUG=true
+SKILLREGISTRY_AUTH__FRONTEND_ORIGIN=http://localhost:8080,http://127.0.0.1:8080
+SKILLREGISTRY_AUTH__COOKIE_DOMAIN=
 ```
 
 > Note: After the config refactor, the application only reads `SKILLREGISTRY_*` variables (double underscores for nesting). Legacy names like `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_FORCE_PATH_STYLE`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` are ignored by the app itself; they remain only for helpers/tests that read them directly or for the AWS SDK’s default credential chain.
+
+> Auth cookie note: use `SKILLREGISTRY_DEBUG=true` for local HTTP development. `SKILLREGISTRY_AUTH__FRONTEND_ORIGIN` accepts a comma-separated allowlist. For production HTTPS, set `SKILLREGISTRY_DEBUG=false`, set `SKILLREGISTRY_AUTH__FRONTEND_ORIGIN=https://app.example.com,https://admin.example.com`, and optionally set `SKILLREGISTRY_AUTH__COOKIE_DOMAIN=.example.com` when sharing cookies across subdomains.
 
 Run the API:
 
