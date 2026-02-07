@@ -32,3 +32,4 @@ Thumbs.db
 *.db-shm
 *.db-wal
 .trae/
+.worktree/

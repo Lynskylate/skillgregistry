@@ -538,7 +538,8 @@ async fn create_discovery_registry_via_admin_api(
         ))
         .bearer_auth(admin_token)
         .json(&serde_json::json!({
-            "platform": "github",
+            "provider": "github",
+            "url": "https://api.github.com",
             "token": std::env::var("GITHUB_TOKEN").unwrap_or_default(),
             "queries": queries,
             "schedule_interval_seconds": 3600

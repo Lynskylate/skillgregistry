@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { FormEvent, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { api } from "@/lib/api"
 import type { ApiResponse } from "@/lib/types"
@@ -22,7 +22,8 @@ export default function Register() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const onRegister = async () => {
+  const onRegister = async (e: FormEvent) => {
+    e.preventDefault()
     setSubmitting(true)
     setError(null)
     try {
@@ -50,29 +51,47 @@ export default function Register() {
           <CardTitle>Create account</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="space-y-3">
+          <form className="space-y-3" onSubmit={onRegister}>
             <div className="space-y-2">
-              <div className="text-sm text-muted-foreground">Username</div>
-              <Input value={username} onChange={(e) => setUsername(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <div className="text-sm text-muted-foreground">Email (optional)</div>
-              <Input value={email} onChange={(e) => setEmail(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <div className="text-sm text-muted-foreground">Display name (optional)</div>
-              <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <div className="text-sm text-muted-foreground">Password</div>
+              <label htmlFor="register-username" className="text-sm text-muted-foreground">Username</label>
               <Input
+                id="register-username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="register-email" className="text-sm text-muted-foreground">Email (optional)</label>
+              <Input
+                id="register-email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="register-display-name" className="text-sm text-muted-foreground">Display name (optional)</label>
+              <Input
+                id="register-display-name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="register-password" className="text-sm text-muted-foreground">Password</label>
+              <Input
+                id="register-password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+                required
               />
             </div>
             {error && <div className="text-sm text-destructive">{error}</div>}
-            <Button className="w-full" disabled={submitting} onClick={onRegister}>
+            <Button type="submit" className="w-full" disabled={submitting}>
               Create account
             </Button>
             <div className="text-sm text-muted-foreground">
@@ -81,7 +100,7 @@ export default function Register() {
                 Sign in
               </Link>
             </div>
-          </div>
+          </form>
         </CardContent>
       </Card>
     </div>

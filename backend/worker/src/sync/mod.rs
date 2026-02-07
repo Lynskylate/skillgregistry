@@ -104,7 +104,7 @@ impl SyncService {
         let token = self.resolve_repo_token(&repo).await?;
         let file_map = self
             .github
-            .clone_repository_files(&repo.owner, &repo.name, token)
+            .clone_repository_files(&repo.owner, &repo.name, &repo.url, token)
             .await?;
 
         let result = self.sync_from_file_map(&repo, &file_map).await;
@@ -140,7 +140,7 @@ impl SyncService {
         let token = self.resolve_repo_token(&repo).await?;
         let file_map = self
             .github
-            .clone_repository_files(&repo.owner, &repo.name, token)
+            .clone_repository_files(&repo.owner, &repo.name, &repo.url, token)
             .await?;
         let zip_data = archive::package_zip(&file_map)?;
         let zip_hash = format!("{:x}", md5::compute(&zip_data));

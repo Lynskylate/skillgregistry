@@ -1,5 +1,7 @@
 use crate::entities::discovery_registries;
-use crate::repositories::discovery_registries::DiscoveryRegistryRepository;
+use crate::repositories::discovery_registries::{
+    CreateDiscoveryRegistryParams, DiscoveryRegistryRepository,
+};
 use async_trait::async_trait;
 use sea_orm::DbErr;
 use std::sync::Arc;
@@ -9,6 +11,7 @@ pub struct DiscoveryRegistryConfig {
     pub id: i32,
     pub platform: discovery_registries::Platform,
     pub token: String,
+    pub api_url: String,
     pub queries: Vec<String>,
     pub schedule_interval_seconds: i64,
     pub last_health_status: Option<String>,
@@ -31,6 +34,7 @@ pub trait DiscoveryRegistryService: Send + Sync {
         token: String,
         queries: Vec<String>,
         schedule_interval_seconds: i64,
+        api_url: String,
     ) -> Result<DiscoveryRegistryConfig, DbErr>;
 
     async fn update_config(
@@ -38,6 +42,7 @@ pub trait DiscoveryRegistryService: Send + Sync {
         id: i32,
         queries: Vec<String>,
         schedule_interval_seconds: i64,
+        api_url: String,
     ) -> Result<Option<DiscoveryRegistryConfig>, DbErr>;
 
     async fn delete_by_id(&self, id: i32) -> Result<bool, DbErr>;
@@ -86,6 +91,7 @@ impl DiscoveryRegistryServiceImpl {
             id: model.id,
             platform: model.platform,
             token: model.token,
+            api_url: model.api_url,
             queries,
             schedule_interval_seconds: model.schedule_interval_seconds,
             last_health_status: model.last_health_status,
@@ -127,6 +133,7 @@ impl DiscoveryRegistryService for DiscoveryRegistryServiceImpl {
         token: String,
         queries: Vec<String>,
         schedule_interval_seconds: i64,
+        api_url: String,
     ) -> Result<DiscoveryRegistryConfig, DbErr> {
         let queries_json = Self::serialize_queries(&queries)?;
         let now = chrono::Utc::now().naive_utc();
@@ -134,14 +141,15 @@ impl DiscoveryRegistryService for DiscoveryRegistryServiceImpl {
 
         let model = self
             .repo
-            .create(
-                discovery_registries::Platform::Github,
+            .create(CreateDiscoveryRegistryParams {
+                platform: discovery_registries::Platform::Github,
                 token,
+                api_url,
                 queries_json,
                 schedule_interval_seconds,
                 now,
                 next_run_at,
-            )
+            })
             .await?;
 
         Self::model_to_config(model)
@@ -152,13 +160,14 @@ impl DiscoveryRegistryService for DiscoveryRegistryServiceImpl {
         id: i32,
         queries: Vec<String>,
         schedule_interval_seconds: i64,
+        api_url: String,
     ) -> Result<Option<DiscoveryRegistryConfig>, DbErr> {
         let queries_json = Self::serialize_queries(&queries)?;
         let now = chrono::Utc::now().naive_utc();
 
         let model = self
             .repo
-            .update_config(id, queries_json, schedule_interval_seconds, now)
+            .update_config(id, queries_json, schedule_interval_seconds, api_url, now)
             .await?;
 
         model.map(Self::model_to_config).transpose()

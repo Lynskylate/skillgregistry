@@ -1,4 +1,5 @@
 use crate::models::ApiResponse;
+use crate::origin::{is_origin_allowed as origin_matches, parse_frontend_origins};
 use crate::AppState;
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -1918,7 +1919,7 @@ async fn issue_tokens_and_set_cookie(
     state: &Arc<AppState>,
     user_id: Uuid,
     role: String,
-    rotated_from: Option<i64>,
+    rotated_from: Option<i32>,
 ) -> (CookieJar, Json<ApiResponse<LoginResponse>>) {
     let db = state.db.as_ref();
     let now = Utc::now();
@@ -2013,21 +2014,30 @@ async fn issue_tokens_and_set_cookie(
     )
 }
 
-fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
-    if state.settings.debug {
+fn origin_allowed_by_config(
+    debug: bool,
+    frontend_origin: Option<&str>,
+    request_origin: Option<&str>,
+) -> bool {
+    if debug {
         return true;
     }
 
-    let expected = match state.settings.auth.frontend_origin.as_ref() {
-        Some(v) if !v.is_empty() => v,
-        _ => return true,
-    };
+    let allowed_origins = parse_frontend_origins(frontend_origin);
+    if allowed_origins.is_empty() {
+        return true;
+    }
 
-    let origin = headers
-        .get(ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    origin == expected
+    origin_matches(&allowed_origins, request_origin.unwrap_or(""))
+}
+
+fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
+    let origin = headers.get(ORIGIN).and_then(|v| v.to_str().ok());
+    origin_allowed_by_config(
+        state.settings.debug,
+        state.settings.auth.frontend_origin.as_deref(),
+        origin,
+    )
 }
 
 #[cfg(test)]
@@ -2135,5 +2145,30 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], 200);
         assert_eq!(json["data"]["username"], "alice");
+    }
+
+    #[test]
+    fn origin_allowlist_accepts_multiple_origins() {
+        let configured = Some("https://app.example.com,https://admin.example.com");
+        assert!(origin_allowed_by_config(
+            false,
+            configured,
+            Some("https://app.example.com")
+        ));
+        assert!(origin_allowed_by_config(
+            false,
+            configured,
+            Some("https://admin.example.com")
+        ));
+    }
+
+    #[test]
+    fn origin_allowlist_rejects_unknown_origin() {
+        let configured = Some("https://app.example.com,https://admin.example.com");
+        assert!(!origin_allowed_by_config(
+            false,
+            configured,
+            Some("https://evil.example.com")
+        ));
     }
 }

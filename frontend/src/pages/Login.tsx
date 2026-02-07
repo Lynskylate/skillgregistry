@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { FormEvent, useMemo, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { api } from "@/lib/api"
 import type { ApiResponse } from "@/lib/types"
@@ -40,7 +40,8 @@ export default function Login() {
     return null
   }, [ssoItems])
 
-  const onLogin = async () => {
+  const onLogin = async (e: FormEvent) => {
+    e.preventDefault()
     setSubmitting(true)
     setError(null)
     try {
@@ -95,21 +96,30 @@ export default function Login() {
               Admin access is required to open that page.
             </div>
           )}
-          <div className="space-y-3">
+          <form className="space-y-3" onSubmit={onLogin}>
             <div className="space-y-2">
-              <div className="text-sm text-muted-foreground">Username / Email</div>
-              <Input value={identifier} onChange={(e) => setIdentifier(e.target.value)} />
+              <label htmlFor="identifier" className="text-sm text-muted-foreground">Username / Email</label>
+              <Input
+                id="identifier"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                autoComplete="username"
+                required
+              />
             </div>
             <div className="space-y-2">
-              <div className="text-sm text-muted-foreground">Password</div>
+              <label htmlFor="password" className="text-sm text-muted-foreground">Password</label>
               <Input
+                id="password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
               />
             </div>
             {error && <div className="text-sm text-destructive">{error}</div>}
-            <Button className="w-full" disabled={submitting} onClick={onLogin}>
+            <Button type="submit" className="w-full" disabled={submitting}>
               Sign in
             </Button>
             <div className="text-sm text-muted-foreground">
@@ -118,7 +128,7 @@ export default function Login() {
                 Create one
               </Link>
             </div>
-          </div>
+          </form>
 
           <div className="space-y-3">
             <div className="text-sm text-muted-foreground">Continue with</div>
@@ -133,12 +143,14 @@ export default function Login() {
           </div>
 
           <div className="space-y-3">
-            <div className="text-sm text-muted-foreground">Enterprise SSO</div>
+            <label htmlFor="sso-email" className="text-sm text-muted-foreground">Enterprise SSO</label>
             <div className="flex gap-2">
               <Input
+                id="sso-email"
                 placeholder="Enter your email to find your organization's SSO"
                 value={ssoEmail}
                 onChange={(e) => setSsoEmail(e.target.value)}
+                autoComplete="email"
               />
               <Button variant="outline" disabled={ssoLoading} onClick={onSsoLookup}>
                 Look up

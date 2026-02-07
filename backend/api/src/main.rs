@@ -1,16 +1,19 @@
 mod auth;
 mod handlers;
 mod models;
+mod origin;
 
 use axum::{
-    http::HeaderValue,
+    http::{request::Parts, HeaderValue},
     routing::{get, patch, post},
     Router,
 };
 use common::build_all;
 use common::settings::Settings;
+use origin::{is_origin_allowed, parse_frontend_origins};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tower_http::cors::AllowOrigin;
 use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -112,21 +115,28 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn build_cors(settings: &Settings) -> CorsLayer {
-    let origin = settings
-        .auth
-        .frontend_origin
-        .as_ref()
-        .and_then(|s| HeaderValue::from_str(s).ok());
+    let allowed_origins = parse_frontend_origins(settings.auth.frontend_origin.as_deref());
 
-    match (settings.debug, origin) {
-        (false, Some(origin)) => CorsLayer::new()
-            .allow_origin(origin)
-            .allow_credentials(true)
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-            ])
-            .allow_methods(Any),
+    match (settings.debug, allowed_origins.is_empty()) {
+        (false, false) => {
+            let allowed = Arc::new(allowed_origins);
+            let allow_origin =
+                AllowOrigin::predicate(move |origin: &HeaderValue, _request: &Parts| {
+                    let Ok(origin) = origin.to_str() else {
+                        return false;
+                    };
+                    is_origin_allowed(&allowed, origin)
+                });
+
+            CorsLayer::new()
+                .allow_origin(allow_origin)
+                .allow_credentials(true)
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                ])
+                .allow_methods(Any)
+        }
         _ => CorsLayer::permissive(),
     }
 }

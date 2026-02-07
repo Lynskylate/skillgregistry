@@ -17,6 +17,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub token: String,
     #[sea_orm(column_type = "Text")]
+    pub api_url: String,
+    #[sea_orm(column_type = "Text")]
     pub queries_json: String,
     pub schedule_interval_seconds: i64,
     pub last_health_status: Option<String>,

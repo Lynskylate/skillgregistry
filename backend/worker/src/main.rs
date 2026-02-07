@@ -102,10 +102,7 @@ async fn main() -> anyhow::Result<()> {
 
     let discovery = Arc::new(
         activities::discovery::DiscoveryActivities::new(ctx.db.clone(), ctx.github.clone())
-            .with_registry_service(
-                ctx.services.discovery_registry_service.clone(),
-                ctx.settings.github.api_url.clone(),
-            ),
+            .with_registry_service(ctx.services.discovery_registry_service.clone()),
     );
 
     let sync_activities = Arc::new(activities::sync::SyncActivities::new(sync_service.clone()));

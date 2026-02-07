@@ -99,9 +99,10 @@ async fn index_flow_discovers_and_syncs_standalone_repo() -> Result<()> {
     )]);
     github
         .expect_clone_repository_files()
-        .returning(move |owner, repo, token| {
+        .returning(move |owner, repo, repo_url, token| {
             assert_eq!(owner, "test-owner");
             assert_eq!(repo, "standalone");
+            assert_eq!(repo_url, "https://github.com/test-owner/standalone");
             assert!(token.is_none());
             Ok(file_map.clone())
         });
@@ -222,9 +223,10 @@ async fn index_flow_discovers_and_syncs_marketplace_repo() -> Result<()> {
     ]);
     github
         .expect_clone_repository_files()
-        .returning(move |owner, repo, token| {
+        .returning(move |owner, repo, repo_url, token| {
             assert_eq!(owner, "test-owner");
             assert_eq!(repo, "market");
+            assert_eq!(repo_url, "https://github.com/test-owner/market");
             assert!(token.is_none());
             Ok(file_map.clone())
         });
