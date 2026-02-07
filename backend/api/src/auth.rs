@@ -1919,7 +1919,7 @@ async fn issue_tokens_and_set_cookie(
     state: &Arc<AppState>,
     user_id: Uuid,
     role: String,
-    rotated_from: Option<i32>,
+    rotated_from: Option<i64>,
 ) -> (CookieJar, Json<ApiResponse<LoginResponse>>) {
     let db = state.db.as_ref();
     let now = Utc::now();

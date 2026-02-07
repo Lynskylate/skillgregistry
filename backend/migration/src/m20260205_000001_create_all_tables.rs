@@ -173,10 +173,14 @@ impl MigrationTrait for Migration {
             .create_table(
                 Table::create()
                     .table(RefreshTokens::Table)
-                    .col(pk_auto(RefreshTokens::Id))
+                    .col(
+                        big_integer(RefreshTokens::Id)
+                            .auto_increment()
+                            .primary_key(),
+                    )
                     .col(uuid(RefreshTokens::UserId))
                     .col(string(RefreshTokens::TokenHash))
-                    .col(integer_null(RefreshTokens::RotatedFrom))
+                    .col(big_integer_null(RefreshTokens::RotatedFrom))
                     .col(date_time(RefreshTokens::ExpiresAt))
                     .col(date_time_null(RefreshTokens::RevokedAt))
                     .col(string_null(RefreshTokens::UserAgent))
