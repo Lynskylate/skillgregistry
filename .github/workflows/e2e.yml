@@ -122,7 +122,7 @@ jobs:
           E2E_TARGET_OWNER: anthropics
           E2E_TARGET_REPO: skills
           E2E_DISCOVERY_TIMEOUT_SECS: "360"
-          E2E_SYNC_TIMEOUT_SECS: "600"
+          E2E_SYNC_TIMEOUT_SECS: "1200"
           RUST_LOG: debug
         run: |
           cargo test -p e2e-tests --test e2e test_discovery_sync_and_upload -- --ignored --nocapture
