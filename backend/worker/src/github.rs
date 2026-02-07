@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
+use url::Url;
 use walkdir::WalkDir;
 
 #[derive(Deserialize, Debug)]
@@ -148,11 +149,12 @@ impl GithubClient {
         &self,
         owner: &str,
         repo: &str,
+        repo_url: &str,
         token: Option<String>,
     ) -> Result<BTreeMap<String, Vec<u8>>> {
         let temp_dir = tempfile::tempdir()?;
         let checkout_dir = temp_dir.path().join("repo");
-        let clone_url = format!("https://github.com/{}/{}.git", owner, repo);
+        let clone_url = Self::build_clone_url(owner, repo, repo_url);
 
         let output = Self::run_git_clone(&clone_url, &checkout_dir, token.as_deref()).await?;
         if output.status.success() {
@@ -212,6 +214,37 @@ impl GithubClient {
             .arg(checkout_dir);
 
         Ok(cmd.output().await?)
+    }
+
+    fn build_clone_url(owner: &str, repo: &str, repo_url: &str) -> String {
+        let fallback = format!("https://github.com/{}/{}.git", owner, repo);
+
+        let Ok(mut parsed) = Url::parse(repo_url) else {
+            return fallback;
+        };
+
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return fallback;
+        }
+
+        if parsed.host_str().is_none() {
+            return fallback;
+        }
+
+        parsed.set_query(None);
+        parsed.set_fragment(None);
+
+        let mut path = parsed.path().trim_end_matches('/').to_string();
+        if path.is_empty() || path == "/" {
+            path = format!("/{}/{}", owner, repo);
+        }
+
+        if !path.ends_with(".git") {
+            path.push_str(".git");
+        }
+
+        parsed.set_path(&path);
+        parsed.to_string()
     }
 
     fn should_retry_without_token(stderr: &str) -> bool {
@@ -307,4 +340,35 @@ fn collect_repository_files(repo_dir: &Path) -> Result<BTreeMap<String, Vec<u8>>
     }
 
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GithubClient;
+
+    #[test]
+    fn build_clone_url_uses_repository_host() {
+        let url = GithubClient::build_clone_url(
+            "acme",
+            "skill-registry",
+            "https://ghe.example.com/acme/skill-registry",
+        );
+        assert_eq!(url, "https://ghe.example.com/acme/skill-registry.git");
+    }
+
+    #[test]
+    fn build_clone_url_falls_back_when_repo_url_invalid() {
+        let url = GithubClient::build_clone_url("acme", "skill-registry", "not-a-url");
+        assert_eq!(url, "https://github.com/acme/skill-registry.git");
+    }
+
+    #[test]
+    fn build_clone_url_strips_query_and_fragment() {
+        let url = GithubClient::build_clone_url(
+            "acme",
+            "skill-registry",
+            "https://ghe.example.com/acme/skill-registry?ref=main#readme",
+        );
+        assert_eq!(url, "https://ghe.example.com/acme/skill-registry.git");
+    }
 }

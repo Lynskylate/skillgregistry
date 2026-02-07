@@ -194,9 +194,18 @@ async fn seed_default_discovery_registry(
     }
 
     let now = Utc::now().naive_utc();
+    let api_url = settings.github.api_url.trim().trim_end_matches('/');
+    let api_url = if api_url.is_empty() {
+        "https://api.github.com"
+    } else {
+        api_url
+    }
+    .to_string();
+
     discovery_registries::ActiveModel {
         platform: Set(discovery_registries::Platform::Github),
         token: Set(token),
+        api_url: Set(api_url),
         queries_json: Set(serde_json::to_string(&queries)?),
         schedule_interval_seconds: Set(std::cmp::max(
             settings.worker.scan_interval_seconds as i64,

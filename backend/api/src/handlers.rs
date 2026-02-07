@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
 use temporalio_client::{ClientOptions, WorkflowClientTrait, WorkflowOptions};
-use temporalio_sdk_core::Url;
+use temporalio_sdk_core::Url as TemporalUrl;
+use url::Url;
+
+const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 
 #[derive(Deserialize)]
 pub struct SearchParams {
@@ -29,7 +32,8 @@ pub struct SearchParams {
 #[derive(Serialize)]
 pub struct DiscoveryRegistryDto {
     pub id: i32,
-    pub platform: String,
+    pub provider: String,
+    pub url: String,
     pub queries: Vec<String>,
     pub schedule_interval_seconds: i64,
     pub token_configured: bool,
@@ -44,8 +48,9 @@ pub struct DiscoveryRegistryDto {
 
 #[derive(Deserialize)]
 pub struct CreateDiscoveryRegistryRequest {
-    pub platform: String,
+    pub provider: String,
     pub token: String,
+    pub url: Option<String>,
     pub queries: Vec<String>,
     pub schedule_interval_seconds: i64,
 }
@@ -55,6 +60,7 @@ pub struct CreateDiscoveryRegistryRequest {
 pub struct UpdateDiscoveryRegistryRequest {
     pub queries: Vec<String>,
     pub schedule_interval_seconds: i64,
+    pub url: String,
 }
 
 #[derive(Serialize)]
@@ -69,10 +75,37 @@ pub struct TriggerWorkflowDto {
     pub workflow_id: String,
 }
 
-fn map_platform(platform: &discovery_registries::Platform) -> String {
+fn map_provider(platform: &discovery_registries::Platform) -> String {
     match platform {
         discovery_registries::Platform::Github => "github".to_string(),
     }
+}
+
+fn normalize_api_url(raw: Option<&str>) -> Result<String, String> {
+    let value = raw
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(DEFAULT_GITHUB_API_URL);
+
+    let parsed = Url::parse(value).map_err(|e| format!("invalid url: {}", e))?;
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("url must use http or https".to_string());
+    }
+
+    if parsed.host_str().is_none() {
+        return Err("url must include a host".to_string());
+    }
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("url must not include credentials".to_string());
+    }
+
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("url must not include query or fragment".to_string());
+    }
+
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
 }
 
 fn to_registry_dto(
@@ -80,7 +113,8 @@ fn to_registry_dto(
 ) -> DiscoveryRegistryDto {
     DiscoveryRegistryDto {
         id: config.id,
-        platform: map_platform(&config.platform),
+        provider: map_provider(&config.platform),
+        url: config.api_url.clone(),
         queries: config.queries.clone(),
         schedule_interval_seconds: config.schedule_interval_seconds,
         token_configured: !config.token.trim().is_empty(),
@@ -320,10 +354,10 @@ pub async fn create_discovery_registry(
         return Json(ApiResponse::error(403, "admin access required".to_string()));
     }
 
-    if req.platform.trim().to_lowercase() != "github" {
+    if req.provider.trim().to_lowercase() != "github" {
         return Json(ApiResponse::error(
             400,
-            "only github platform is supported".to_string(),
+            "only github provider is supported".to_string(),
         ));
     }
 
@@ -347,10 +381,15 @@ pub async fn create_discovery_registry(
         ));
     }
 
+    let api_url = match normalize_api_url(req.url.as_deref()) {
+        Ok(url) => url,
+        Err(msg) => return Json(ApiResponse::error(400, msg)),
+    };
+
     match state
         .services
         .discovery_registry_service
-        .create_github_registry(token, queries, req.schedule_interval_seconds)
+        .create_github_registry(token, queries, req.schedule_interval_seconds, api_url)
         .await
     {
         Ok(config) => Json(ApiResponse::success(to_registry_dto(&config))),
@@ -383,10 +422,15 @@ pub async fn update_discovery_registry(
         ));
     }
 
+    let api_url = match normalize_api_url(Some(&req.url)) {
+        Ok(url) => url,
+        Err(msg) => return Json(ApiResponse::error(400, msg)),
+    };
+
     match state
         .services
         .discovery_registry_service
-        .update_config(id, queries, req.schedule_interval_seconds)
+        .update_config(id, queries, req.schedule_interval_seconds, api_url)
         .await
     {
         Ok(Some(config)) => Json(ApiResponse::success(to_registry_dto(&config))),
@@ -438,8 +482,7 @@ pub async fn test_discovery_registry_health(
 
     let checked_at = Utc::now().naive_utc();
     let client = reqwest::Client::new();
-    let api_url = state.settings.github.api_url.trim_end_matches('/');
-    let health_url = format!("{}/rate_limit", api_url);
+    let health_url = format!("{}/rate_limit", config.api_url.trim_end_matches('/'));
 
     let response = client
         .get(health_url)
@@ -502,7 +545,7 @@ pub async fn trigger_discovery_registry(
     let workflow_id = format!("trigger-registry-{}-{}", id, uuid::Uuid::new_v4());
     let task_queue = state.settings.temporal.task_queue.clone();
 
-    let temporal_url = match Url::from_str(&state.settings.temporal.server_url) {
+    let temporal_url = match TemporalUrl::from_str(&state.settings.temporal.server_url) {
         Ok(url) => url,
         Err(e) => {
             return Json(ApiResponse::error(
@@ -549,4 +592,29 @@ pub async fn trigger_discovery_registry(
     }
 
     Json(ApiResponse::success(TriggerWorkflowDto { workflow_id }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_api_url;
+
+    #[test]
+    fn normalize_api_url_defaults_to_public_github() {
+        let normalized = normalize_api_url(None).expect("default URL should be valid");
+        assert_eq!(normalized, "https://api.github.com");
+    }
+
+    #[test]
+    fn normalize_api_url_accepts_enterprise_api_base() {
+        let normalized = normalize_api_url(Some("https://ghe.example.com/api/v3/"))
+            .expect("enterprise URL should be valid");
+        assert_eq!(normalized, "https://ghe.example.com/api/v3");
+    }
+
+    #[test]
+    fn normalize_api_url_rejects_query_string() {
+        let err = normalize_api_url(Some("https://api.github.com/?a=1"))
+            .expect_err("query parameters are not allowed");
+        assert!(err.contains("query"));
+    }
 }

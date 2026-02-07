@@ -100,6 +100,41 @@ async fn test_skill_registry_entity_matches_schema() {
 }
 
 #[tokio::test]
+async fn test_discovery_registries_entity_matches_schema() {
+    let db = setup_test_db().await;
+
+    use common::entities::discovery_registries;
+    use sea_orm::{ActiveModelTrait, Set};
+
+    let row = discovery_registries::ActiveModel {
+        platform: Set(discovery_registries::Platform::Github),
+        token: Set("ghp_test".to_string()),
+        api_url: Set("https://api.github.com".to_string()),
+        queries_json: Set("[\"topic:agent-skill\"]".to_string()),
+        schedule_interval_seconds: Set(3600),
+        last_health_status: Set(None),
+        last_health_message: Set(None),
+        last_health_checked_at: Set(None),
+        last_run_at: Set(None),
+        next_run_at: Set(Some(chrono::Utc::now().naive_utc())),
+        created_at: Set(chrono::Utc::now().naive_utc()),
+        updated_at: Set(chrono::Utc::now().naive_utc()),
+        ..Default::default()
+    };
+
+    let result = row.insert(&db).await;
+    assert!(
+        result.is_ok(),
+        "Failed to insert into discovery_registries: {:?}",
+        result.err()
+    );
+
+    let count = discovery_registries::Entity::find().count(&db).await;
+    assert!(count.is_ok());
+    assert_eq!(count.unwrap(), 1);
+}
+
+#[tokio::test]
 async fn test_skills_entity_matches_schema() {
     let db = setup_test_db().await;
 

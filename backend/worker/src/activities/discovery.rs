@@ -19,7 +19,6 @@ pub struct DiscoveryActivities {
     github: Arc<dyn GithubApi>,
     discovery_registry_service:
         Option<Arc<dyn common::services::discovery_registries::DiscoveryRegistryService>>,
-    github_api_url: String,
 }
 
 impl DiscoveryActivities {
@@ -28,7 +27,6 @@ impl DiscoveryActivities {
             db,
             github,
             discovery_registry_service: None,
-            github_api_url: "https://api.github.com".to_string(),
         }
     }
 
@@ -37,10 +35,8 @@ impl DiscoveryActivities {
         discovery_registry_service: Arc<
             dyn common::services::discovery_registries::DiscoveryRegistryService,
         >,
-        github_api_url: String,
     ) -> Self {
         self.discovery_registry_service = Some(discovery_registry_service);
-        self.github_api_url = github_api_url;
         self
     }
 
@@ -83,8 +79,7 @@ impl DiscoveryActivities {
             .map_err(ActivityError::from)?
             .ok_or_else(|| ActivityError::from(anyhow::anyhow!("registry not found")))?;
 
-        let github =
-            crate::github::GithubClient::new(Some(config.token), self.github_api_url.clone());
+        let github = crate::github::GithubClient::new(Some(config.token), config.api_url.clone());
         let result = self
             .discover_repos_inner(Some(registry_id), config.queries, &github)
             .await

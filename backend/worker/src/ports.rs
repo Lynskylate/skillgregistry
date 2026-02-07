@@ -16,6 +16,7 @@ pub trait GithubApi: Send + Sync {
         &self,
         owner: &str,
         repo: &str,
+        repo_url: &str,
         token: Option<String>,
     ) -> Result<BTreeMap<String, Vec<u8>>>;
 }
@@ -34,9 +35,11 @@ impl GithubApi for GithubClient {
         &self,
         owner: &str,
         repo: &str,
+        repo_url: &str,
         token: Option<String>,
     ) -> Result<BTreeMap<String, Vec<u8>>> {
-        self.clone_repository_files(owner, repo, token).await
+        self.clone_repository_files(owner, repo, repo_url, token)
+            .await
     }
 }
 

@@ -5,6 +5,17 @@ use sea_orm::{
 };
 use std::sync::Arc;
 
+#[derive(Debug, Clone)]
+pub struct CreateDiscoveryRegistryParams {
+    pub platform: discovery_registries::Platform,
+    pub token: String,
+    pub api_url: String,
+    pub queries_json: String,
+    pub schedule_interval_seconds: i64,
+    pub now: chrono::NaiveDateTime,
+    pub next_run_at: chrono::NaiveDateTime,
+}
+
 #[async_trait::async_trait]
 pub trait DiscoveryRegistryRepository: Send + Sync {
     async fn list_all(&self) -> Result<Vec<discovery_registries::Model>, DbErr>;
@@ -13,12 +24,7 @@ pub trait DiscoveryRegistryRepository: Send + Sync {
 
     async fn create(
         &self,
-        platform: discovery_registries::Platform,
-        token: String,
-        queries_json: String,
-        schedule_interval_seconds: i64,
-        now: chrono::NaiveDateTime,
-        next_run_at: chrono::NaiveDateTime,
+        params: CreateDiscoveryRegistryParams,
     ) -> Result<discovery_registries::Model, DbErr>;
 
     async fn update_config(
@@ -26,6 +32,7 @@ pub trait DiscoveryRegistryRepository: Send + Sync {
         id: i32,
         queries_json: String,
         schedule_interval_seconds: i64,
+        api_url: String,
         updated_at: chrono::NaiveDateTime,
     ) -> Result<Option<discovery_registries::Model>, DbErr>;
 
@@ -81,16 +88,22 @@ impl DiscoveryRegistryRepository for DiscoveryRegistryRepositoryImpl {
 
     async fn create(
         &self,
-        platform: discovery_registries::Platform,
-        token: String,
-        queries_json: String,
-        schedule_interval_seconds: i64,
-        now: chrono::NaiveDateTime,
-        next_run_at: chrono::NaiveDateTime,
+        params: CreateDiscoveryRegistryParams,
     ) -> Result<discovery_registries::Model, DbErr> {
+        let CreateDiscoveryRegistryParams {
+            platform,
+            token,
+            api_url,
+            queries_json,
+            schedule_interval_seconds,
+            now,
+            next_run_at,
+        } = params;
+
         discovery_registries::ActiveModel {
             platform: Set(platform),
             token: Set(token),
+            api_url: Set(api_url),
             queries_json: Set(queries_json),
             schedule_interval_seconds: Set(schedule_interval_seconds),
             last_health_status: Set(None),
@@ -111,6 +124,7 @@ impl DiscoveryRegistryRepository for DiscoveryRegistryRepositoryImpl {
         id: i32,
         queries_json: String,
         schedule_interval_seconds: i64,
+        api_url: String,
         updated_at: chrono::NaiveDateTime,
     ) -> Result<Option<discovery_registries::Model>, DbErr> {
         let Some(existing) = self.find_by_id(id).await? else {
@@ -120,6 +134,7 @@ impl DiscoveryRegistryRepository for DiscoveryRegistryRepositoryImpl {
         let mut active: discovery_registries::ActiveModel = existing.into();
         active.queries_json = Set(queries_json);
         active.schedule_interval_seconds = Set(schedule_interval_seconds);
+        active.api_url = Set(api_url);
         active.next_run_at = Set(Some(updated_at));
         active.updated_at = Set(updated_at);
 
