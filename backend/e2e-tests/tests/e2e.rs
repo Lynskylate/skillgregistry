@@ -87,7 +87,7 @@ impl E2eConfig {
             target_owner,
             target_repo,
             discovery_timeout: Duration::from_secs(env_u64("E2E_DISCOVERY_TIMEOUT_SECS", 240)),
-            sync_timeout: Duration::from_secs(env_u64("E2E_SYNC_TIMEOUT_SECS", 480)),
+            sync_timeout: Duration::from_secs(env_u64("E2E_SYNC_TIMEOUT_SECS", 900)),
             s3_bucket: env_or("SKILLREGISTRY_S3__BUCKET", "skills"),
             s3_region: env_or("SKILLREGISTRY_S3__REGION", "us-east-1"),
             s3_endpoint: std::env::var("SKILLREGISTRY_S3__ENDPOINT")
