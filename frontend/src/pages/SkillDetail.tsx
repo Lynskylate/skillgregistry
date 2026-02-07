@@ -34,6 +34,7 @@ export default function SkillDetail() {
   const [data, setData] = useState<SkillDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<"readme" | "versions">("readme")
+  const [copiedInstallCommand, setCopiedInstallCommand] = useState(false)
 
   useEffect(() => {
     if (owner && repo && name) {
@@ -55,15 +56,52 @@ export default function SkillDetail() {
     }
   }
 
-  if (loading) return <div className="p-8 text-center">Loading skill details...</div>
-  if (!data) return <div className="p-8 text-center">Skill not found</div>
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      return false
+    }
+  }
 
-  const latestVersion = data.versions.find(v => v.version === data.skill.latest_version) || data.versions[0]
+  const onCopyInstallCommand = async () => {
+    if (!data) return
+    const copied = await copyText(`npx skills add ${data.registry.owner}/${data.registry.name}/${data.skill.name}`)
+    if (copied) {
+      setCopiedInstallCommand(true)
+      window.setTimeout(() => setCopiedInstallCommand(false), 1200)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="container mx-auto py-8">
+        <div className="rounded-lg border bg-card p-10 text-center text-muted-foreground">
+          Loading skill details...
+        </div>
+      </div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="container mx-auto py-8">
+        <div className="rounded-lg border bg-card p-10 text-center space-y-4">
+          <p className="text-muted-foreground">Skill not found.</p>
+          <Button asChild variant="outline">
+            <Link to="/">Back to leaderboard</Link>
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  const latestVersion = data.versions.find((v) => v.version === data.skill.latest_version) || data.versions[0]
 
   return (
     <div className="container mx-auto py-8 space-y-8">
-      {/* Breadcrumb */}
-      <div className="flex items-center text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-center text-sm text-muted-foreground">
         <Link to="/" className="hover:text-primary">Skills</Link>
         <ChevronRight className="h-4 w-4 mx-2" />
         <Link to={`/${data.registry.owner}`} className="hover:text-primary">{data.registry.owner}</Link>
@@ -73,11 +111,10 @@ export default function SkillDetail() {
         <span className="text-foreground font-medium">{data.skill.name}</span>
       </div>
 
-      {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-4xl font-bold tracking-tight mb-2">{data.skill.name}</h1>
-          <div className="flex items-center gap-4 text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
             <span className="flex items-center gap-1">
               <Github className="h-4 w-4" />
               {data.registry.owner}/{data.registry.name}
@@ -90,30 +127,35 @@ export default function SkillDetail() {
           </div>
         </div>
         <div className="w-full md:w-auto">
-           <div className="bg-zinc-950 text-zinc-50 px-4 py-3 rounded-md font-mono text-sm flex items-center gap-4 shadow-sm border border-zinc-800">
-             <Terminal className="h-4 w-4 text-zinc-400" />
-             <span>npx skills add {data.registry.owner}/{data.registry.name}/{data.skill.name}</span>
-             <Button variant="ghost" size="sm" className="h-6 ml-auto text-zinc-400 hover:text-white">
-               Copy
-             </Button>
-           </div>
+          <div className="bg-zinc-950 text-zinc-50 px-4 py-3 rounded-md font-mono text-sm flex items-center gap-4 shadow-sm border border-zinc-800">
+            <Terminal className="h-4 w-4 text-zinc-400" />
+            <span className="truncate">npx skills add {data.registry.owner}/{data.registry.name}/{data.skill.name}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 ml-auto text-zinc-300 hover:text-white"
+              onClick={onCopyInstallCommand}
+              aria-label="Copy install command"
+            >
+              {copiedInstallCommand ? "Copied" : "Copy"}
+            </Button>
+          </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-        {/* Main Content */}
         <div className="lg:col-span-3 space-y-6">
           <div className="flex items-center border-b">
-            <Button 
-              variant={activeTab === "readme" ? "default" : "ghost"}
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary"
+            <Button
+              variant="ghost"
+              className={`rounded-none border-b-2 ${activeTab === "readme" ? "border-primary" : "border-transparent"}`}
               onClick={() => setActiveTab("readme")}
             >
               README.md
             </Button>
-            <Button 
-              variant={activeTab === "versions" ? "default" : "ghost"}
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary"
+            <Button
+              variant="ghost"
+              className={`rounded-none border-b-2 ${activeTab === "versions" ? "border-primary" : "border-transparent"}`}
               onClick={() => setActiveTab("versions")}
             >
               Versions ({data.versions.length})
@@ -139,10 +181,15 @@ export default function SkillDetail() {
                       <span className="font-mono font-medium">{v.version}</span>
                       <span className="text-sm text-muted-foreground flex items-center gap-1">
                         <Calendar className="h-3 w-3" />
-                        {new Date().toLocaleDateString()} {/* Mock date if not in version */}
+                        {new Date(v.created_at).toLocaleDateString()}
                       </span>
                     </div>
-                    <Button variant="outline" size="sm">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled
+                      title="Version detail view will be available in the next iteration"
+                    >
                       View
                     </Button>
                   </div>
@@ -152,8 +199,7 @@ export default function SkillDetail() {
           </div>
         </div>
 
-        {/* Sidebar */}
-        <div className="space-y-6">
+        <div className="space-y-6 lg:sticky lg:top-24 lg:self-start">
           <Card>
             <CardHeader>
               <CardTitle className="text-base">About</CardTitle>
@@ -163,7 +209,7 @@ export default function SkillDetail() {
                 Published {new Date(data.skill.created_at).toLocaleDateString()}
               </div>
               <div className="text-sm text-muted-foreground">
-                License: MIT (Mock)
+                License information coming in a future update.
               </div>
               <div className="pt-4 border-t">
                 <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Maintainer</h4>
