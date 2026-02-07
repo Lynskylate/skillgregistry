@@ -82,12 +82,15 @@ impl E2eConfig {
 
         Ok(Self {
             database_url: env_or(
-                "DATABASE_URL",
+                "SKILLREGISTRY_DATABASE__URL",
                 "sqlite:///tmp/skillregistry-e2e.db?mode=rwc",
             ),
-            temporal_server_url: env_or("TEMPORAL_SERVER_URL", "http://localhost:7233"),
+            temporal_server_url: env_or(
+                "SKILLREGISTRY_TEMPORAL__SERVER_URL",
+                "http://localhost:7233",
+            ),
             temporal_task_queue: env_or(
-                "SKILLREGISTRY_TEMPORAL_TASK_QUEUE",
+                "SKILLREGISTRY_TEMPORAL__TASK_QUEUE",
                 "skill-registry-queue",
             ),
             api_base_url: env_or("E2E_API_BASE_URL", "http://localhost:3000"),
@@ -108,17 +111,17 @@ impl E2eConfig {
             baseline_discovery_registry_count: env_u64("E2E_BASELINE_DISCOVERY_REGISTRY_COUNT", 1)
                 as usize,
             discovery_timeout: Duration::from_secs(env_u64("E2E_DISCOVERY_TIMEOUT_SECS", 240)),
-            sync_timeout: Duration::from_secs(env_u64("E2E_SYNC_TIMEOUT_SECS", 480)),
-            s3_bucket: env_or("S3_BUCKET", "skills"),
-            s3_region: env_or("S3_REGION", "us-east-1"),
-            s3_endpoint: std::env::var("S3_ENDPOINT")
+            sync_timeout: Duration::from_secs(env_u64("E2E_SYNC_TIMEOUT_SECS", 900)),
+            s3_bucket: env_or("SKILLREGISTRY_S3__BUCKET", "skills"),
+            s3_region: env_or("SKILLREGISTRY_S3__REGION", "us-east-1"),
+            s3_endpoint: std::env::var("SKILLREGISTRY_S3__ENDPOINT")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
-            s3_force_path_style: env_bool("S3_FORCE_PATH_STYLE", true),
-            aws_access_key_id: std::env::var("AWS_ACCESS_KEY_ID")
+            s3_force_path_style: env_bool("SKILLREGISTRY_S3__FORCE_PATH_STYLE", true),
+            aws_access_key_id: std::env::var("SKILLREGISTRY_S3__ACCESS_KEY_ID")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
-            aws_secret_access_key: std::env::var("AWS_SECRET_ACCESS_KEY")
+            aws_secret_access_key: std::env::var("SKILLREGISTRY_S3__SECRET_ACCESS_KEY")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
         })
