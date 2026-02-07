@@ -42,6 +42,8 @@ SKILLREGISTRY_S3__SECRET_ACCESS_KEY=your_secret
 SKILLREGISTRY_S3__REGION=us-east-1
 ```
 
+> Note: After the config refactor, the application only reads `SKILLREGISTRY_*` variables (double underscores for nesting). Legacy names like `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_FORCE_PATH_STYLE`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` are ignored by the app itself; they remain only for helpers/tests that read them directly or for the AWS SDK’s default credential chain.
+
 Run the API:
 
 ```bash
