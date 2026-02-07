@@ -69,6 +69,8 @@ jobs:
       - name: Run setup (migrations + S3 bucket)
         working-directory: ./backend
         env:
+          SKILLREGISTRY_DATABASE__URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
+          SKILLREGISTRY_GITHUB__TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DATABASE_URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
           S3_ENDPOINT: http://localhost:9000
           S3_BUCKET: skills
@@ -84,6 +86,8 @@ jobs:
       - name: Start Worker
         working-directory: ./backend
         env:
+          SKILLREGISTRY_DATABASE__URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
+          SKILLREGISTRY_GITHUB__TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DATABASE_URL: sqlite:///tmp/skillregistry-e2e.db?mode=rwc
           S3_ENDPOINT: http://localhost:9000
           S3_BUCKET: skills
