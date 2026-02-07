@@ -72,9 +72,29 @@ export default function SkillList() {
   }
 
   const copyText = async (text: string) => {
+    // Try modern clipboard API first (only works in secure contexts)
+    if (window.isSecureContext && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(text)
+        return true
+      } catch {
+        // Fall through to fallback method
+      }
+    }
+
+    // Fallback: use textarea method for non-secure contexts
     try {
-      await navigator.clipboard.writeText(text)
-      return true
+      const textarea = document.createElement("textarea")
+      textarea.value = text
+      textarea.style.position = "fixed"
+      textarea.style.left = "-999999px"
+      textarea.style.top = "-999999px"
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      const success = document.execCommand("copy")
+      textarea.remove()
+      return success
     } catch {
       return false
     }
@@ -89,7 +109,7 @@ export default function SkillList() {
   }
 
   const onCopyInstallCommand = async (skill: Skill) => {
-    const copied = await copyText(`npx skills add ${skill.owner}/${skill.repo}/${skill.name}`)
+    const copied = await copyText(`npx skills add ${skill.owner}/${skill.repo} --skill ${skill.name}`)
     if (copied) {
       setCopiedSkillId(skill.id)
       window.setTimeout(() => setCopiedSkillId(null), 1200)

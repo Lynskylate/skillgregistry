@@ -57,9 +57,29 @@ export default function SkillDetail() {
   }
 
   const copyText = async (text: string) => {
+    // Try modern clipboard API first (only works in secure contexts)
+    if (window.isSecureContext && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(text)
+        return true
+      } catch {
+        // Fall through to fallback method
+      }
+    }
+
+    // Fallback: use textarea method for non-secure contexts
     try {
-      await navigator.clipboard.writeText(text)
-      return true
+      const textarea = document.createElement("textarea")
+      textarea.value = text
+      textarea.style.position = "fixed"
+      textarea.style.left = "-999999px"
+      textarea.style.top = "-999999px"
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      const success = document.execCommand("copy")
+      textarea.remove()
+      return success
     } catch {
       return false
     }
@@ -67,7 +87,7 @@ export default function SkillDetail() {
 
   const onCopyInstallCommand = async () => {
     if (!data) return
-    const copied = await copyText(`npx skills add ${data.registry.owner}/${data.registry.name}/${data.skill.name}`)
+    const copied = await copyText(`npx skills add ${data.registry.owner}/${data.registry.name} --skill ${data.skill.name}`)
     if (copied) {
       setCopiedInstallCommand(true)
       window.setTimeout(() => setCopiedInstallCommand(false), 1200)
@@ -129,7 +149,7 @@ export default function SkillDetail() {
         <div className="w-full md:w-auto">
           <div className="bg-zinc-950 text-zinc-50 px-4 py-3 rounded-md font-mono text-sm flex items-center gap-4 shadow-sm border border-zinc-800">
             <Terminal className="h-4 w-4 text-zinc-400" />
-            <span className="truncate">npx skills add {data.registry.owner}/{data.registry.name}/{data.skill.name}</span>
+            <span className="truncate">npx skills add {data.registry.owner}/{data.registry.name} --skill {data.skill.name}</span>
             <Button
               variant="ghost"
               size="sm"

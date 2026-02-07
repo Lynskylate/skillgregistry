@@ -1,8 +1,8 @@
 import { useEffect } from "react"
 import { useNavigate } from "react-router-dom"
+import { useAuth } from "@/contexts/AuthContext"
 import { api } from "@/lib/api"
 import type { ApiResponse } from "@/lib/types"
-import { setAccessToken } from "@/lib/auth"
 
 type LoginResponse = {
   access_token: string
@@ -12,6 +12,7 @@ type LoginResponse = {
 
 export default function AuthCallback() {
   const navigate = useNavigate()
+  const { applyAccessToken } = useAuth()
 
   useEffect(() => {
     const run = async () => {
@@ -19,7 +20,7 @@ export default function AuthCallback() {
         const res = await api.post<ApiResponse<LoginResponse>>("/api/auth/refresh")
         const token = res.data.data?.access_token
         if (token) {
-          setAccessToken(token)
+          await applyAccessToken(token)
           navigate("/", { replace: true })
         } else {
           navigate("/login", { replace: true })
@@ -29,8 +30,7 @@ export default function AuthCallback() {
       }
     }
     run()
-  }, [navigate])
+  }, [applyAccessToken, navigate])
 
   return <div className="p-8 text-center">Signing you in...</div>
 }
-

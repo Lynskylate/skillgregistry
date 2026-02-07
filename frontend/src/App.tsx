@@ -8,7 +8,6 @@ import Register from "./pages/Register"
 import AuthCallback from "./pages/AuthCallback"
 import DiscoveryRegistries from "./pages/DiscoveryRegistries"
 import { AuthProvider, useAuth } from "./contexts/AuthContext"
-import { setAccessToken } from "./lib/auth"
 import { Button } from "./components/ui/button"
 
 function RequireAdmin({ children }: { children: ReactElement }) {
@@ -33,7 +32,7 @@ function RequireAdmin({ children }: { children: ReactElement }) {
 }
 
 function AppContent() {
-  const { role, user, refreshAuth } = useAuth()
+  const { role, user, logout } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -43,8 +42,7 @@ function AppContent() {
   }, [location.pathname, location.search])
 
   const onLogout = async () => {
-    setAccessToken(null)
-    await refreshAuth()
+    await logout()
     navigate("/")
   }
 

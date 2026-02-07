@@ -2,7 +2,6 @@ import { FormEvent, useMemo, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { api } from "@/lib/api"
 import type { ApiResponse } from "@/lib/types"
-import { setAccessToken } from "@/lib/auth"
 import { useAuth } from "@/contexts/AuthContext"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -23,7 +22,7 @@ type SsoLookupItem = {
 export default function Login() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const { refreshAuth } = useAuth()
+  const { applyAccessToken } = useAuth()
   const [identifier, setIdentifier] = useState("")
   const [password, setPassword] = useState("")
   const [submitting, setSubmitting] = useState(false)
@@ -51,8 +50,7 @@ export default function Login() {
       })
       const token = res.data.data?.access_token
       if (!token) throw new Error("missing token")
-      setAccessToken(token)
-      await refreshAuth()
+      await applyAccessToken(token)
       navigate(redirectPath)
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Sign-in failed.")

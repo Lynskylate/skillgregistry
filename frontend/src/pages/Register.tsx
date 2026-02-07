@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { api } from "@/lib/api"
 import type { ApiResponse } from "@/lib/types"
-import { setAccessToken } from "@/lib/auth"
+import { useAuth } from "@/contexts/AuthContext"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -15,6 +15,7 @@ type LoginResponse = {
 
 export default function Register() {
   const navigate = useNavigate()
+  const { applyAccessToken } = useAuth()
   const [username, setUsername] = useState("")
   const [email, setEmail] = useState("")
   const [displayName, setDisplayName] = useState("")
@@ -35,7 +36,7 @@ export default function Register() {
       })
       const token = res.data.data?.access_token
       if (!token) throw new Error("missing token")
-      setAccessToken(token)
+      await applyAccessToken(token)
       navigate("/")
     } catch (e: any) {
       setError(e?.response?.data?.message ?? "Registration failed.")
