@@ -30,10 +30,17 @@ pub struct GithubRepo {
     pub name: String,
     pub html_url: String,
     pub description: Option<String>,
+    #[serde(default)]
     pub stargazers_count: i32,
+    #[serde(default = "utc_now")]
     pub created_at: DateTime<Utc>,
+    #[serde(default = "utc_now")]
     pub updated_at: DateTime<Utc>,
     pub owner: GithubOwner,
+}
+
+fn utc_now() -> DateTime<Utc> {
+    Utc::now()
 }
 
 #[derive(Deserialize, Debug)]
@@ -147,9 +154,50 @@ impl GithubClient {
         let checkout_dir = temp_dir.path().join("repo");
         let clone_url = format!("https://github.com/{}/{}.git", owner, repo);
 
+        let output = Self::run_git_clone(&clone_url, &checkout_dir, token.as_deref()).await?;
+        if output.status.success() {
+            return collect_repository_files(&checkout_dir);
+        }
+
+        let primary_error = Self::sanitize_git_stderr(&output.stderr, token.as_deref());
+        if token.is_some() && Self::should_retry_without_token(&primary_error) {
+            tracing::warn!(
+                owner,
+                repo,
+                "git clone with token failed, retrying without token"
+            );
+            if checkout_dir.exists() {
+                let _ = std::fs::remove_dir_all(&checkout_dir);
+            }
+
+            let fallback_output = Self::run_git_clone(&clone_url, &checkout_dir, None).await?;
+            if fallback_output.status.success() {
+                return collect_repository_files(&checkout_dir);
+            }
+
+            let fallback_error = Self::sanitize_git_stderr(&fallback_output.stderr, None);
+            return Err(anyhow::anyhow!(
+                "git clone failed with token and without token. token_error='{}', fallback_error='{}'",
+                primary_error.trim(),
+                fallback_error.trim()
+            ));
+        }
+
+        Err(anyhow::anyhow!(
+            "git clone failed: {}",
+            primary_error.trim()
+        ))
+    }
+
+    async fn run_git_clone(
+        clone_url: &str,
+        checkout_dir: &Path,
+        token: Option<&str>,
+    ) -> Result<std::process::Output> {
         let mut cmd = Command::new("git");
         cmd.env("GIT_TERMINAL_PROMPT", "0");
-        if let Some(auth_token) = token.as_ref() {
+
+        if let Some(auth_token) = token {
             cmd.arg("-c").arg(format!(
                 "http.extraheader=Authorization: Bearer {}",
                 auth_token
@@ -161,19 +209,26 @@ impl GithubClient {
             .arg("1")
             .arg("--quiet")
             .arg(clone_url)
-            .arg(&checkout_dir);
+            .arg(checkout_dir);
 
-        let output = cmd.output().await?;
-        if !output.status.success() {
-            let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            if let Some(auth_token) = token.as_ref() {
-                stderr = stderr.replace(auth_token, "***");
-            }
+        Ok(cmd.output().await?)
+    }
 
-            return Err(anyhow::anyhow!("git clone failed: {}", stderr.trim()));
+    fn should_retry_without_token(stderr: &str) -> bool {
+        let lower = stderr.to_ascii_lowercase();
+        lower.contains("invalid credentials")
+            || lower.contains("authentication failed")
+            || lower.contains("http basic: access denied")
+            || lower.contains("could not read username")
+            || lower.contains("repository not found")
+    }
+
+    fn sanitize_git_stderr(stderr: &[u8], token: Option<&str>) -> String {
+        let mut text = String::from_utf8_lossy(stderr).to_string();
+        if let Some(auth_token) = token {
+            text = text.replace(auth_token, "***");
         }
-
-        collect_repository_files(&checkout_dir)
+        text
     }
 
     async fn send_request_with_retry(&self, url: &str) -> Result<Response> {
