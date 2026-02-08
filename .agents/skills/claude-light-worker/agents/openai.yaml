@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Light Worker"
+  short_description: "Delegate lightweight tasks to Claude workers"
+  default_prompt: "Use $claude-light-worker to delegate this small task in a worktree and return validated output."
