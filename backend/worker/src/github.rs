@@ -26,7 +26,7 @@ pub struct GithubCodeItem {
     pub repository: GithubRepo,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct GithubRepo {
     pub name: String,
     pub html_url: String,
@@ -44,7 +44,7 @@ fn utc_now() -> DateTime<Utc> {
     Utc::now()
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct GithubOwner {
     pub login: String,
 }
@@ -293,7 +293,9 @@ fn collect_repository_files(repo_dir: &Path) -> Result<BTreeMap<String, Vec<u8>>
 
 #[cfg(test)]
 mod tests {
-    use super::GithubClient;
+    use super::{collect_repository_files, GithubClient};
+    use std::fs;
+    use std::io::Write;
 
     #[test]
     fn build_clone_url_uses_repository_host() {
@@ -319,5 +321,56 @@ mod tests {
             "https://ghe.example.com/acme/skill-registry?ref=main#readme",
         );
         assert_eq!(url, "https://ghe.example.com/acme/skill-registry.git");
+    }
+
+    #[test]
+    fn build_clone_url_rejects_unsupported_schemes_and_empty_paths() {
+        let ssh = GithubClient::build_clone_url(
+            "acme",
+            "skill-registry",
+            "ssh://ghe.example.com/acme/skill-registry",
+        );
+        assert_eq!(ssh, "https://github.com/acme/skill-registry.git");
+
+        let no_path =
+            GithubClient::build_clone_url("acme", "skill-registry", "https://ghe.example.com");
+        assert_eq!(no_path, "https://ghe.example.com/acme/skill-registry.git");
+    }
+
+    #[test]
+    fn should_retry_without_token_matches_auth_failures() {
+        assert!(GithubClient::should_retry_without_token(
+            "invalid credentials"
+        ));
+        assert!(GithubClient::should_retry_without_token(
+            "HTTP Basic: Access denied"
+        ));
+        assert!(!GithubClient::should_retry_without_token("network timeout"));
+    }
+
+    #[test]
+    fn sanitize_git_stderr_redacts_token() {
+        let raw = b"fatal: token abc123 rejected";
+        let sanitized = GithubClient::sanitize_git_stderr(raw, Some("abc123"));
+        assert!(!sanitized.contains("abc123"));
+        assert!(sanitized.contains("***"));
+    }
+
+    #[test]
+    fn collect_repository_files_skips_git_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_dir = temp.path();
+        fs::create_dir_all(repo_dir.join("src")).unwrap();
+        fs::create_dir_all(repo_dir.join(".git")).unwrap();
+
+        let mut file = fs::File::create(repo_dir.join("src/lib.rs")).unwrap();
+        writeln!(file, "fn main() {{}}").unwrap();
+
+        let mut git_file = fs::File::create(repo_dir.join(".git/config")).unwrap();
+        writeln!(git_file, "[core]").unwrap();
+
+        let files = collect_repository_files(repo_dir).unwrap();
+        assert!(files.contains_key("src/lib.rs"));
+        assert!(!files.contains_key(".git/config"));
     }
 }

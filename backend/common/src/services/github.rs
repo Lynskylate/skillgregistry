@@ -21,3 +21,21 @@ impl GithubService for GithubClient {
         self.download_zipball(owner, repo).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn github_service_impl_forwards_errors_from_client() {
+        let client = GithubClient::new(None, "http://127.0.0.1:1".to_string()).unwrap();
+        let service: &dyn GithubService = &client;
+
+        assert!(service
+            .search_repositories("topic:agent-skill")
+            .await
+            .is_err());
+        assert!(service.search_code("path:SKILL.md").await.is_err());
+        assert!(service.download_zipball("acme", "repo").await.is_err());
+    }
+}

@@ -609,3 +609,317 @@ fn parse_component_file(
         metadata: parsed.metadata,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ports::MockStorage;
+    use common::entities::{plugin_components, plugin_versions, plugins, skill_registry};
+    use migration::MigratorTrait;
+    use sea_orm::{
+        ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter, Set,
+    };
+    use std::collections::BTreeMap;
+
+    async fn setup_db() -> DatabaseConnection {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        migration::Migrator::up(&db, None).await.unwrap();
+        db
+    }
+
+    async fn insert_registry(db: &DatabaseConnection, name: &str) -> skill_registry::Model {
+        skill_registry::ActiveModel {
+            platform: Set(skill_registry::Platform::Github),
+            owner: Set("acme".to_string()),
+            name: Set(name.to_string()),
+            url: Set(format!("https://github.com/acme/{}", name)),
+            status: Set("active".to_string()),
+            stars: Set(3),
+            created_at: Set(chrono::Utc::now().naive_utc()),
+            updated_at: Set(chrono::Utc::now().naive_utc()),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap()
+    }
+
+    fn file_map(entries: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
+        entries
+            .iter()
+            .map(|(path, content)| ((*path).to_string(), content.as_bytes().to_vec()))
+            .collect()
+    }
+
+    fn markdown(name: &str, description: &str) -> String {
+        format!("---\nname: {name}\ndescription: {description}\n---\n# Body\n")
+    }
+
+    #[test]
+    fn manifest_and_path_helpers_handle_edge_cases() {
+        let dirs = extract_component_dirs_from_manifest(&serde_json::json!({
+            "commands": {"path": "cmds"},
+            "agents_dir": "agents-v2",
+            "skills": {"directory": "abilities"}
+        }));
+        assert_eq!(dirs.get("commands").map(String::as_str), Some("cmds"));
+        assert_eq!(dirs.get("agents").map(String::as_str), Some("agents-v2"));
+        assert_eq!(dirs.get("skills").map(String::as_str), Some("abilities"));
+
+        assert_eq!(join_plugin_path("", "commands"), "commands");
+        assert_eq!(
+            join_plugin_path("plugins/p1", "commands"),
+            "plugins/p1/commands"
+        );
+        assert_eq!(
+            join_plugin_path("./plugins/p1/", "./commands/"),
+            "plugins/p1/commands/"
+        );
+
+        let skill_paths = resolve_explicit_skill_paths(
+            &[
+                serde_json::json!("skills/a"),
+                serde_json::json!("skills/b/SKILL.md"),
+            ],
+            "plugins/p1",
+        );
+        assert_eq!(
+            skill_paths,
+            vec![
+                "plugins/p1/skills/a/SKILL.md".to_string(),
+                "plugins/p1/skills/b/SKILL.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_path_expansion_and_component_parse_cover_boundaries() {
+        let files = file_map(&[
+            ("plugins/p1/commands/hello.md", &markdown("hello", "cmd")),
+            (
+                "plugins/p1/skills/s1/SKILL.md",
+                &markdown("skill-one", "skill"),
+            ),
+        ]);
+
+        let expanded = expand_explicit_md_paths(
+            &files,
+            "plugins/p1",
+            &[
+                serde_json::json!("commands"),
+                serde_json::json!("skills/s1/SKILL.md"),
+            ],
+            false,
+        );
+        assert!(expanded.contains(&"plugins/p1/commands/hello.md".to_string()));
+        assert!(!expanded.contains(&"plugins/p1/skills/s1/SKILL.md".to_string()));
+
+        let expanded_with_skill = expand_explicit_md_paths(
+            &files,
+            "plugins/p1",
+            &[serde_json::json!("skills/s1/SKILL.md")],
+            true,
+        );
+        assert_eq!(
+            expanded_with_skill,
+            vec!["plugins/p1/skills/s1/SKILL.md".to_string()]
+        );
+
+        let command = parse_component_file(
+            &files,
+            "plugins/p1",
+            "plugins/p1/commands/hello.md",
+            "command",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(command.name, "hello");
+        assert_eq!(command.kind, "command");
+
+        let skill = parse_component_file(
+            &files,
+            "plugins/p1",
+            "plugins/p1/skills/s1/SKILL.md",
+            "skill",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(skill.name, "skill-one");
+        assert_eq!(skill.path, "skills/s1/SKILL.md");
+
+        let missing =
+            parse_component_file(&files, "plugins/p1", "plugins/p1/missing.md", "agent").unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn collect_plugin_components_respects_strict_mode() {
+        let files = file_map(&[
+            ("plugins/p1/commands/hello.md", &markdown("hello", "cmd")),
+            (
+                "plugins/p1/agents/reviewer.md",
+                &markdown("reviewer", "agent"),
+            ),
+            (
+                "plugins/p1/skills/s1/SKILL.md",
+                &markdown("skill-one", "skill"),
+            ),
+        ]);
+
+        let strict_entry = serde_json::json!({
+            "commands": ["commands/hello.md"],
+            "agents": ["agents/reviewer.md"],
+            "skills": ["skills/s1"]
+        });
+        let strict = collect_plugin_components(
+            &files,
+            "plugins/p1",
+            &strict_entry,
+            &serde_json::json!({}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(strict.len(), 3);
+
+        let non_strict = collect_plugin_components(
+            &files,
+            "plugins/p1",
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            false,
+        )
+        .unwrap();
+        assert_eq!(non_strict.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn sync_marketplace_plugins_happy_path_is_idempotent() {
+        let db = setup_db().await;
+        let repo = insert_registry(&db, "market-repo").await;
+
+        let marketplace = serde_json::json!({
+            "plugins": [
+                {
+                    "name": "alpha",
+                    "description": "Alpha plugin",
+                    "source": "plugins/alpha",
+                    "strict": true,
+                    "commands": ["commands/hello.md"],
+                    "agents": ["agents/reviewer.md"],
+                    "skills": ["skills/s1"]
+                }
+            ]
+        });
+
+        let plugin_manifest = serde_json::json!({
+            "name": "alpha",
+            "version": "1.2.3",
+            "commandsDir": "commands",
+            "agentsDir": "agents",
+            "skillsDir": "skills"
+        });
+
+        let files = file_map(&[
+            (
+                "plugins/alpha/.claude-plugin/plugin.json",
+                &plugin_manifest.to_string(),
+            ),
+            ("plugins/alpha/commands/hello.md", &markdown("hello", "cmd")),
+            (
+                "plugins/alpha/agents/reviewer.md",
+                &markdown("reviewer", "agent"),
+            ),
+            (
+                "plugins/alpha/skills/s1/SKILL.md",
+                &markdown("skill-one", "skill"),
+            ),
+        ]);
+
+        let mut storage = MockStorage::new();
+        storage.expect_upload().times(1).returning(|key, body| {
+            assert!(key.starts_with("plugins/alpha/1.2.3.zip"));
+            assert!(!body.is_empty());
+            Ok(format!("https://oss.local/{key}"))
+        });
+
+        let first = sync_marketplace_plugins(&db, &storage, &repo, &files, &marketplace)
+            .await
+            .unwrap();
+        assert!(first.changed);
+        assert!(first
+            .plugin_root_prefixes
+            .contains("plugins/alpha/commands"));
+        assert!(first.plugin_root_prefixes.contains("plugins/alpha/agents"));
+        assert!(first.plugin_root_prefixes.contains("plugins/alpha/skills"));
+
+        let second = sync_marketplace_plugins(&db, &storage, &repo, &files, &marketplace)
+            .await
+            .unwrap();
+        assert!(!second.changed);
+
+        let plugin = Plugins::find()
+            .filter(plugins::Column::SkillRegistryId.eq(repo.id))
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(plugin.name, "alpha");
+        assert_eq!(plugin.latest_version.as_deref(), Some("1.2.3"));
+
+        let version = PluginVersions::find()
+            .filter(plugin_versions::Column::PluginId.eq(plugin.id))
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(version.version, "1.2.3");
+        assert!(version.metadata.is_some());
+
+        let components = PluginComponents::find()
+            .filter(plugin_components::Column::PluginVersionId.eq(version.id))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(components.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn sync_marketplace_plugins_deactivates_removed_plugins() {
+        let db = setup_db().await;
+        let repo = insert_registry(&db, "deactivate-market").await;
+
+        let existing = plugins::ActiveModel {
+            skill_registry_id: Set(repo.id),
+            name: Set("stale".to_string()),
+            description: Set(Some("old".to_string())),
+            source: Set(Some(serde_json::json!({"source": "plugins/stale"}))),
+            strict: Set(0),
+            latest_version: Set(Some("1.0.0".to_string())),
+            is_active: Set(1),
+            created_at: Set(chrono::Utc::now().naive_utc()),
+            updated_at: Set(chrono::Utc::now().naive_utc()),
+            ..Default::default()
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let outcome = sync_marketplace_plugins(
+            &db,
+            &MockStorage::new(),
+            &repo,
+            &BTreeMap::new(),
+            &serde_json::json!({"plugins": []}),
+        )
+        .await
+        .unwrap();
+        assert!(!outcome.changed);
+
+        let refreshed = Plugins::find_by_id(existing.id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(refreshed.is_active, 0);
+    }
+}

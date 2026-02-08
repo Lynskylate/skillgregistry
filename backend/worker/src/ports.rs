@@ -60,3 +60,38 @@ impl Storage for S3Service {
         self.download_file(key).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn github_api_impl_forwards_errors() {
+        let client = GithubClient::new(None, "http://127.0.0.1:1".to_string()).unwrap();
+        let api: &dyn GithubApi = &client;
+
+        assert!(api.search_repositories("topic:agent-skill").await.is_err());
+        assert!(api.search_code("path:SKILL.md").await.is_err());
+        assert!(api
+            .clone_repository_files("acme", "skills", "https://github.com/acme/skills", None,)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn storage_impl_forwards_errors() {
+        let s3 = common::s3::S3Service::new(
+            "skills".to_string(),
+            "us-east-1".to_string(),
+            Some("http://127.0.0.1:1".to_string()),
+            None,
+            None,
+            true,
+        )
+        .await;
+        let storage: &dyn Storage = &s3;
+
+        assert!(storage.download("missing").await.is_err());
+        assert!(storage.upload("artifact.zip", vec![1, 2, 3]).await.is_err());
+    }
+}

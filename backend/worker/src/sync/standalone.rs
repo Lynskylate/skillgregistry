@@ -468,3 +468,266 @@ pub async fn sync_standalone_skills(
         found_any: !found_skill_names.is_empty(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ports::MockStorage;
+    use common::domain::skill::SkillFrontmatter;
+    use common::entities::{skill_registry, skills};
+    use migration::MigratorTrait;
+    use sea_orm::{
+        ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, PaginatorTrait,
+        QueryFilter, Set,
+    };
+    use std::collections::{BTreeMap, HashSet};
+
+    async fn setup_db() -> DatabaseConnection {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        migration::Migrator::up(&db, None).await.unwrap();
+        db
+    }
+
+    async fn insert_registry(db: &DatabaseConnection, name: &str) -> skill_registry::Model {
+        skill_registry::ActiveModel {
+            platform: Set(skill_registry::Platform::Github),
+            owner: Set("acme".to_string()),
+            name: Set(name.to_string()),
+            url: Set(format!("https://github.com/acme/{}", name)),
+            status: Set("active".to_string()),
+            stars: Set(1),
+            created_at: Set(chrono::Utc::now().naive_utc()),
+            updated_at: Set(chrono::Utc::now().naive_utc()),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap()
+    }
+
+    fn file_map(entries: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
+        entries
+            .iter()
+            .map(|(path, content)| ((*path).to_string(), content.as_bytes().to_vec()))
+            .collect()
+    }
+
+    fn skill_md(name: &str, version: Option<&str>) -> String {
+        let mut out = format!(
+            "---\nname: {}\ndescription: {} description\nlicense: MIT\ncompatibility: claude, codex\nallowed-tools: bash, rg\n",
+            name, name
+        );
+        if let Some(v) = version {
+            out.push_str(&format!("metadata:\n  version: {}\n  docs: https://docs.example/{name}\n  url: https://example.com/{name}\n", v));
+        }
+        out.push_str("---\n# Body\n");
+        out
+    }
+
+    #[test]
+    fn parse_csv_and_array_helpers_cover_edge_cases() {
+        assert_eq!(parse_csv_or_single("a,b,c"), vec!["a", "b", "c"]);
+        assert_eq!(parse_csv_or_single("   single   "), vec!["single"]);
+        assert_eq!(parse_csv_or_single(" , , "), vec![", ,"]);
+
+        let array_value = serde_json::json!(["bash", "rg", 3]);
+        assert_eq!(
+            ensure_array_string(&array_value),
+            Some(vec!["bash".to_string(), "rg".to_string()])
+        );
+        assert_eq!(ensure_array_string(&serde_json::json!([])), None);
+        assert_eq!(
+            ensure_array_string(&serde_json::json!("bash, rg")),
+            Some(vec!["bash".to_string(), "rg".to_string()])
+        );
+        assert_eq!(ensure_array_string(&serde_json::json!(null)), None);
+    }
+
+    #[test]
+    fn normalize_skill_metadata_merges_known_fields() {
+        let frontmatter = SkillFrontmatter {
+            name: "sample-skill".to_string(),
+            description: "desc".to_string(),
+            license: Some("MIT".to_string()),
+            compatibility: None,
+            allowed_tools: None,
+            metadata: Some(serde_json::json!({
+                "compatibility": "claude, codex",
+                "allowed_tools": ["bash", "rg"],
+                "docs": "https://docs.example/skill",
+                "url": "https://example.com/skill"
+            })),
+        };
+
+        let normalized = normalize_skill_metadata(&frontmatter).unwrap();
+        assert_eq!(normalized["license"], "MIT");
+        assert_eq!(
+            normalized["compatibility"],
+            serde_json::json!(["claude", "codex"])
+        );
+        assert_eq!(
+            normalized["allowed-tools"],
+            serde_json::json!(["bash", "rg"])
+        );
+        assert_eq!(
+            normalized["documentation_url"],
+            serde_json::json!("https://docs.example/skill")
+        );
+        assert_eq!(
+            normalized["homepage"],
+            serde_json::json!("https://example.com/skill")
+        );
+        assert!(normalized.get("allowed_tools").is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_standalone_skills_happy_path_is_idempotent() {
+        let db = setup_db().await;
+        let repo = insert_registry(&db, "standalone-repo").await;
+
+        let mut storage = MockStorage::new();
+        storage.expect_upload().times(1).returning(|key, body| {
+            assert!(key.starts_with("skills/demo-skill/1.0.0.zip"));
+            assert!(!body.is_empty());
+            Ok(format!("https://oss.local/{key}"))
+        });
+
+        let files = file_map(&[
+            ("demo/SKILL.md", &skill_md("demo-skill", Some("1.0.0"))),
+            ("demo/scripts/run.sh", "echo ok"),
+        ]);
+
+        let first = sync_standalone_skills(&db, &storage, &repo, &files, &HashSet::new(), true)
+            .await
+            .unwrap();
+        assert!(first.changed);
+        assert!(first.found_any);
+
+        let second = sync_standalone_skills(&db, &storage, &repo, &files, &HashSet::new(), true)
+            .await
+            .unwrap();
+        assert!(!second.changed);
+        assert!(second.found_any);
+
+        let skill = Skills::find()
+            .filter(skills::Column::SkillRegistryId.eq(repo.id))
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(skill.name, "demo-skill");
+        assert_eq!(skill.latest_version.as_deref(), Some("1.0.0"));
+
+        let version = SkillVersions::find()
+            .filter(common::entities::skill_versions::Column::SkillId.eq(skill.id))
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(version.version, "1.0.0");
+        let metadata = version.metadata.unwrap();
+        assert_eq!(metadata["license"], "MIT");
+        assert_eq!(metadata["allowed-tools"], serde_json::json!(["bash", "rg"]));
+    }
+
+    #[tokio::test]
+    async fn sync_standalone_skills_returns_not_found_when_required() {
+        let db = setup_db().await;
+        let repo = insert_registry(&db, "invalid-repo").await;
+
+        let files = file_map(&[("bad/SKILL.md", "name: invalid")]);
+        let outcome = sync_standalone_skills(
+            &db,
+            &MockStorage::new(),
+            &repo,
+            &files,
+            &HashSet::new(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(!outcome.changed);
+        assert!(!outcome.found_any);
+        assert_eq!(Skills::find().count(&db).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn sync_standalone_skills_deactivates_missing_skills() {
+        let db = setup_db().await;
+        let repo = insert_registry(&db, "deactivate-repo").await;
+
+        let mut storage = MockStorage::new();
+        storage
+            .expect_upload()
+            .times(2)
+            .returning(|key, _| Ok(format!("https://oss.local/{key}")));
+
+        let initial_files = file_map(&[
+            ("alpha/SKILL.md", &skill_md("alpha-skill", Some("1.0.0"))),
+            ("beta/SKILL.md", &skill_md("beta-skill", Some("1.0.0"))),
+        ]);
+
+        let first =
+            sync_standalone_skills(&db, &storage, &repo, &initial_files, &HashSet::new(), true)
+                .await
+                .unwrap();
+        assert!(first.changed);
+
+        let second_files = file_map(&[("alpha/SKILL.md", &skill_md("alpha-skill", Some("1.0.0")))]);
+        let second =
+            sync_standalone_skills(&db, &storage, &repo, &second_files, &HashSet::new(), true)
+                .await
+                .unwrap();
+        assert!(!second.changed);
+        assert!(second.found_any);
+
+        let beta = Skills::find()
+            .filter(skills::Column::SkillRegistryId.eq(repo.id))
+            .filter(skills::Column::Name.eq("beta-skill"))
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(beta.is_active, 0);
+    }
+
+    #[tokio::test]
+    async fn sync_standalone_skills_respects_excluded_prefixes() {
+        let db = setup_db().await;
+        let repo = insert_registry(&db, "exclude-repo").await;
+
+        let mut storage = MockStorage::new();
+        storage
+            .expect_upload()
+            .times(1)
+            .returning(|key, _| Ok(format!("https://oss.local/{key}")));
+
+        let files = file_map(&[
+            ("root/SKILL.md", &skill_md("root-skill", Some("1.0.0"))),
+            (
+                "plugins/p1/skills/ignored/SKILL.md",
+                &skill_md("ignored-skill", Some("1.0.0")),
+            ),
+        ]);
+
+        let mut excludes = HashSet::new();
+        excludes.insert("plugins/p1/skills".to_string());
+
+        let outcome = sync_standalone_skills(&db, &storage, &repo, &files, &excludes, false)
+            .await
+            .unwrap();
+        assert!(outcome.changed);
+        assert!(outcome.found_any);
+
+        let names: Vec<String> = Skills::find()
+            .filter(skills::Column::SkillRegistryId.eq(repo.id))
+            .all(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, vec!["root-skill".to_string()]);
+    }
+}

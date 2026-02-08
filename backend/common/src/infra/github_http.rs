@@ -78,3 +78,25 @@ pub async fn send_request_with_retry(req: RequestBuilder, context: &str) -> Resu
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_github_client_accepts_token_and_blank_token() {
+        let with_token = build_github_client(Some("token-123")).unwrap();
+        let _req = with_token.get("https://example.com").build().unwrap();
+
+        let blank = build_github_client(Some("   ")).unwrap();
+        let _req = blank.get("https://example.com").build().unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_request_with_retry_surfaces_connection_errors() {
+        let client = reqwest::Client::new();
+        let req = client.get("http://127.0.0.1:1/unreachable");
+        let err = send_request_with_retry(req, "test").await.unwrap_err();
+        assert!(err.to_string().contains("error"));
+    }
+}

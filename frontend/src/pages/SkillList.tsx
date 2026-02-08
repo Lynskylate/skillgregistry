@@ -126,27 +126,17 @@ export default function SkillList() {
   }
 
   const copyText = async (text: string) => {
-<<<<<<< HEAD
-=======
     // Try modern clipboard API first (only works in secure contexts)
->>>>>>> 249762c (fix(frontend): optimize ui)
     if (window.isSecureContext && navigator.clipboard) {
       try {
         await navigator.clipboard.writeText(text)
         return true
       } catch {
-<<<<<<< HEAD
-        // fallback below
-      }
-    }
-
-=======
         // Fall through to fallback method
       }
     }
 
     // Fallback: use textarea method for non-secure contexts
->>>>>>> 249762c (fix(frontend): optimize ui)
     try {
       const textarea = document.createElement("textarea")
       textarea.value = text

@@ -2017,4 +2017,636 @@ mod tests {
             Some("https://evil.example.com")
         ));
     }
+
+    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn auth_app(state: Arc<crate::AppState>) -> axum::Router {
+        axum::Router::new()
+            .nest("/api/auth", router())
+            .route("/api/me", axum::routing::get(me))
+            .with_state(state)
+    }
+
+    #[test]
+    fn origin_allowlist_debug_mode_allows_any_origin() {
+        let configured = crate::origin::parse_frontend_origins(Some("https://app.example.com"));
+        assert!(origin_allowed_by_config(
+            true,
+            configured.as_slice(),
+            Some("https://evil.example.com"),
+        ));
+    }
+
+    #[test]
+    fn hash_and_verify_password_roundtrip() {
+        let hash = hash_password("correct-horse-battery-staple").unwrap();
+        assert!(verify_password("correct-horse-battery-staple", &hash).is_ok());
+        assert!(verify_password("wrong-password", &hash).is_err());
+    }
+
+    #[tokio::test]
+    async fn flow_cookie_helpers_cover_error_cases() {
+        let jar = CookieJar::new();
+        assert!(read_flow_cookie(&jar, "missing").is_err());
+
+        let jar = CookieJar::new().add(Cookie::new("sr_oauth_google", "%%%"));
+        assert!(read_flow_cookie(&jar, "sr_oauth_google").is_err());
+
+        let (_db, state) = setup_db().await.unwrap();
+        let cookie = build_flow_cookie(&state, "flow", "payload", "/api/auth");
+        assert_eq!(cookie.path(), Some("/api/auth"));
+        assert!(cookie.http_only().unwrap_or(false));
+
+        let cleared = clear_named_cookie(&state, "flow", "/api/auth");
+        assert_eq!(cleared.path(), Some("/api/auth"));
+    }
+
+    #[test]
+    fn aud_contains_handles_supported_shapes() {
+        assert!(aud_contains(&serde_json::json!("client"), "client"));
+        assert!(aud_contains(
+            &serde_json::json!(["client", "other"]),
+            "client"
+        ));
+        assert!(!aud_contains(&serde_json::json!(["other"]), "client"));
+        assert!(!aud_contains(
+            &serde_json::json!({"aud": "client"}),
+            "client"
+        ));
+        assert_eq!(
+            pkce_challenge("abc"),
+            "ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0"
+        );
+    }
+
+    #[tokio::test]
+    async fn sso_and_frontend_callback_urls_fallback_and_override() {
+        let (_db, base_state) = setup_db().await.unwrap();
+        let mut settings = base_state.settings.clone();
+        settings.port = 4321;
+        settings.auth.frontend_origin = Some("https://ui.example.com/".to_string());
+        settings.auth.sso.base_url = Some("https://auth.example.com/".to_string());
+
+        let state = crate::AppState {
+            db: base_state.db.clone(),
+            settings,
+            repos: base_state.repos.clone(),
+            services: base_state.services.clone(),
+            allowed_frontend_origins: Arc::new(vec![]),
+        };
+
+        let conn_id = uuid::Uuid::new_v4();
+        assert!(build_sso_callback_url(&state, conn_id).starts_with("https://auth.example.com"));
+        assert_eq!(
+            frontend_post_auth_url(&state),
+            "https://ui.example.com/auth/callback"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_missing_cookie_returns_401() {
+        let (_db, state) = setup_db().await.unwrap();
+        let app = auth_app(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/refresh")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["code"], 401);
+        assert_eq!(json["message"], "missing refresh token");
+    }
+
+    #[tokio::test]
+    async fn refresh_and_logout_reject_disallowed_origin() {
+        let (_db, state) = setup_db().await.unwrap();
+        let mut settings = state.settings.clone();
+        settings.debug = false;
+        settings.auth.frontend_origin = Some("https://app.example.com".to_string());
+        let strict_state = Arc::new(crate::AppState {
+            db: state.db.clone(),
+            settings: settings.clone(),
+            repos: state.repos.clone(),
+            services: state.services.clone(),
+            allowed_frontend_origins: Arc::new(crate::origin::parse_frontend_origins(
+                settings.auth.frontend_origin.as_deref(),
+            )),
+        });
+
+        let app = auth_app(strict_state);
+
+        for path in ["/api/auth/refresh", "/api/auth/logout"] {
+            let req = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("origin", "https://evil.example.com")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let json = body_json(resp).await;
+            assert_eq!(json["code"], 403);
+            assert_eq!(json["message"], "origin not allowed");
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_start_and_callback_validate_inputs() {
+        let (_db, state) = setup_db().await.unwrap();
+        let app = auth_app(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/auth/oauth/unknown/start")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["message"], "unknown oauth provider");
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/auth/oauth/github/start")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["message"], "oauth provider not configured");
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/auth/oauth/github/callback")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["message"], "missing code");
+    }
+
+    #[tokio::test]
+    async fn sso_endpoints_cover_error_and_not_implemented_paths() {
+        let (_db, state) = setup_db().await.unwrap();
+        let app = auth_app(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/sso/lookup")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"email":"invalid-email"}"#))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["code"], 400);
+        assert_eq!(json["message"], "invalid email");
+
+        let id = uuid::Uuid::new_v4();
+        for (method, suffix) in [("POST", "acs"), ("GET", "metadata")] {
+            let req = Request::builder()
+                .method(method)
+                .uri(format!("/api/auth/sso/{}/{}", id, suffix))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+            let json = body_json(resp).await;
+            assert_eq!(json["code"], 501);
+        }
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/auth/sso/{}/start", id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let json = body_json(resp).await;
+        assert_eq!(json["message"], "sso connection not found");
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/auth/sso/{}/callback", id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["message"], "missing code");
+    }
+
+    #[tokio::test]
+    async fn oidc_helpers_report_expected_errors() {
+        let client = reqwest::Client::new();
+
+        let err = fetch_oidc_discovery(&client, None).await.unwrap_err();
+        assert!(err.contains("missing oidc metadata url"));
+
+        let err = exchange_code_for_token(
+            &client,
+            "http://127.0.0.1:1/token",
+            "client",
+            None,
+            "http://localhost/callback",
+            "code",
+            "verifier",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("token exchange failed"));
+
+        let err = verify_oidc_id_token(
+            &client,
+            "http://127.0.0.1:1/jwks",
+            "not-a-token",
+            "issuer",
+            "client",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("failed to fetch jwks") || err.contains("invalid jwks"));
+    }
+
+    fn extract_refresh_cookie_value(set_cookie_header: &str) -> String {
+        set_cookie_header
+            .split(';')
+            .next()
+            .and_then(|kv| kv.split_once('=').map(|(_, v)| v.to_string()))
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn register_rejects_duplicate_username_and_email() {
+        let (_db, state) = setup_db().await.unwrap();
+        let app = auth_app(state);
+
+        let first = Request::builder()
+            .method("POST")
+            .uri("/api/auth/register")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"username":"alice","password":"password123","email":"alice@example.com"}"#,
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(first).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let duplicate_username = Request::builder()
+            .method("POST")
+            .uri("/api/auth/register")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"username":"alice","password":"password123","email":"other@example.com"}"#,
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(duplicate_username).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["code"], 409);
+        assert_eq!(json["message"], "username already exists");
+
+        let duplicate_email = Request::builder()
+            .method("POST")
+            .uri("/api/auth/register")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"username":"bob","password":"password123","email":"alice@example.com"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(duplicate_email).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["code"], 409);
+        assert_eq!(json["message"], "email already exists");
+    }
+
+    #[tokio::test]
+    async fn login_rejects_wrong_password_and_disabled_user() {
+        let (db, state) = setup_db().await.unwrap();
+        let app = auth_app(state.clone());
+
+        let register = Request::builder()
+            .method("POST")
+            .uri("/api/auth/register")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"username":"charlie","password":"password123","email":"c@example.com"}"#,
+            ))
+            .unwrap();
+        let _ = app.clone().oneshot(register).await.unwrap();
+
+        let wrong_password = Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"identifier":"charlie","password":"wrong"}"#))
+            .unwrap();
+        let resp = app.clone().oneshot(wrong_password).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["code"], 401);
+
+        let user = Users::find()
+            .filter(users::Column::Username.eq("charlie"))
+            .one(db.as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut user_am: users::ActiveModel = user.into();
+        user_am.status = Set(users::UserStatus::Disabled);
+        user_am.update(db.as_ref()).await.unwrap();
+
+        let disabled_login = Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"identifier":"charlie","password":"password123"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(disabled_login).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["code"], 403);
+        assert_eq!(json["message"], "user disabled");
+    }
+
+    #[tokio::test]
+    async fn refresh_rotates_cookie_and_logout_revokes_token() {
+        let (_db, state) = setup_db().await.unwrap();
+        let app = auth_app(state);
+
+        let register = Request::builder()
+            .method("POST")
+            .uri("/api/auth/register")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"username":"dana","password":"password123","email":"d@example.com"}"#,
+            ))
+            .unwrap();
+        let register_resp = app.clone().oneshot(register).await.unwrap();
+        let original_cookie = extract_refresh_cookie_value(
+            register_resp
+                .headers()
+                .get("set-cookie")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        );
+        assert!(!original_cookie.is_empty());
+
+        let refresh_req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/refresh")
+            .header("cookie", format!("sr_refresh={}", original_cookie))
+            .body(Body::empty())
+            .unwrap();
+        let refresh_resp = app.clone().oneshot(refresh_req).await.unwrap();
+        let refreshed_cookie = extract_refresh_cookie_value(
+            refresh_resp
+                .headers()
+                .get("set-cookie")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        );
+        assert_ne!(refreshed_cookie, original_cookie);
+
+        let logout_req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/logout")
+            .header("cookie", format!("sr_refresh={}", refreshed_cookie))
+            .body(Body::empty())
+            .unwrap();
+        let logout_resp = app.clone().oneshot(logout_req).await.unwrap();
+        let logout_json = body_json(logout_resp).await;
+        assert_eq!(logout_json["code"], 200);
+
+        let refresh_again = Request::builder()
+            .method("POST")
+            .uri("/api/auth/refresh")
+            .header("cookie", format!("sr_refresh={}", refreshed_cookie))
+            .body(Body::empty())
+            .unwrap();
+        let refresh_again_resp = app.oneshot(refresh_again).await.unwrap();
+        let json = body_json(refresh_again_resp).await;
+        assert_eq!(json["code"], 401);
+        assert_eq!(json["message"], "invalid refresh token");
+    }
+
+    #[tokio::test]
+    async fn sso_lookup_and_start_cover_additional_branches() {
+        let (db, state) = setup_db().await.unwrap();
+        let app = auth_app(state);
+
+        let now = Utc::now().naive_utc();
+        let connection_id = uuid::Uuid::new_v4();
+        let org_id = uuid::Uuid::new_v4();
+        common::entities::organizations::ActiveModel {
+            org_id: Set(org_id),
+            name: Set("Acme".to_string()),
+            slug: Set("acme".to_string()),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(db.as_ref())
+        .await
+        .unwrap();
+
+        sso_connections::ActiveModel {
+            connection_id: Set(connection_id),
+            org_id: Set(org_id),
+            protocol: Set(sso_connections::SsoProtocol::Oidc),
+            issuer: Set(Some("https://issuer.example.com".to_string())),
+            metadata_url: Set(None),
+            sso_url: Set(None),
+            x509_cert_fingerprint: Set(None),
+            client_id: Set(None),
+            client_secret: Set(None),
+            allowed_domains_json: Set(Some("[\"example.com\"]".to_string())),
+            enabled: Set(true),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(db.as_ref())
+        .await
+        .unwrap();
+
+        let lookup_req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/sso/lookup")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"email":"user@example.com"}"#))
+            .unwrap();
+        let lookup_resp = app.clone().oneshot(lookup_req).await.unwrap();
+        let lookup_json = body_json(lookup_resp).await;
+        assert_eq!(lookup_json["code"], 200);
+        assert_eq!(lookup_json["data"].as_array().unwrap().len(), 1);
+
+        let start_req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/auth/sso/{}/start", connection_id))
+            .body(Body::empty())
+            .unwrap();
+        let start_resp = app.oneshot(start_req).await.unwrap();
+        let start_json = body_json(start_resp).await;
+        assert_eq!(start_json["code"], 400);
+        assert_eq!(start_json["message"], "missing client_id");
+    }
+
+    #[tokio::test]
+    async fn me_returns_404_when_user_missing() {
+        let (_db, state) = setup_db().await.unwrap();
+        let resp = me(
+            State(state),
+            AuthUser {
+                user_id: uuid::Uuid::new_v4(),
+                role: "user".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(resp.0.code, 404);
+    }
+
+    #[tokio::test]
+    async fn issue_tokens_requires_signing_key() {
+        let (_db, base_state) = setup_db().await.unwrap();
+        let mut settings = base_state.settings.clone();
+        settings.auth.jwt.signing_key = None;
+        let state = Arc::new(crate::AppState {
+            db: base_state.db.clone(),
+            settings,
+            repos: base_state.repos.clone(),
+            services: base_state.services.clone(),
+            allowed_frontend_origins: base_state.allowed_frontend_origins.clone(),
+        });
+
+        let (jar, body) =
+            issue_tokens_and_set_cookie(&state, uuid::Uuid::new_v4(), "user".to_string(), None)
+                .await;
+        assert!(jar.get(REFRESH_COOKIE_NAME).is_none());
+        assert_eq!(body.0.code, 500);
+    }
+
+    #[tokio::test]
+    async fn login_or_create_user_for_sso_creates_and_reuses_identity() {
+        let (db, base_state) = setup_db().await.unwrap();
+        let now = Utc::now().naive_utc();
+        let org_id = uuid::Uuid::new_v4();
+        let connection_id = uuid::Uuid::new_v4();
+
+        common::entities::organizations::ActiveModel {
+            org_id: Set(org_id),
+            name: Set("Acme".to_string()),
+            slug: Set("acme-sso".to_string()),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(db.as_ref())
+        .await
+        .unwrap();
+
+        sso_connections::ActiveModel {
+            connection_id: Set(connection_id),
+            org_id: Set(org_id),
+            protocol: Set(sso_connections::SsoProtocol::Oidc),
+            issuer: Set(Some("https://issuer.example.com".to_string())),
+            metadata_url: Set(None),
+            sso_url: Set(None),
+            x509_cert_fingerprint: Set(None),
+            client_id: Set(Some("client".to_string())),
+            client_secret: Set(Some("secret".to_string())),
+            allowed_domains_json: Set(Some("[\"example.com\"]".to_string())),
+            enabled: Set(true),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(db.as_ref())
+        .await
+        .unwrap();
+
+        let claims_first = OidcIdTokenClaims {
+            iss: "https://issuer.example.com".to_string(),
+            sub: "subject-1".to_string(),
+            aud: serde_json::json!("client"),
+            exp: Utc::now().timestamp() + 3600,
+            iat: Utc::now().timestamp(),
+            nonce: Some("nonce".to_string()),
+            email: Some("user@example.com".to_string()),
+            email_verified: Some(true),
+            name: Some("User One".to_string()),
+        };
+
+        let (_jar, redirect) =
+            login_or_create_user_for_sso(&base_state, connection_id, org_id, claims_first)
+                .await
+                .unwrap();
+        let response = redirect.into_response();
+        let location = response
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(location.contains("/auth/callback"));
+
+        let identities = SsoIdentities::find().all(db.as_ref()).await.unwrap();
+        assert_eq!(identities.len(), 1);
+        let users_before = Users::find().all(db.as_ref()).await.unwrap();
+        assert_eq!(users_before.len(), 1);
+
+        let claims_second = OidcIdTokenClaims {
+            iss: "https://issuer.example.com".to_string(),
+            sub: "subject-1".to_string(),
+            aud: serde_json::json!("client"),
+            exp: Utc::now().timestamp() + 3600,
+            iat: Utc::now().timestamp(),
+            nonce: Some("nonce".to_string()),
+            email: Some("user@example.com".to_string()),
+            email_verified: Some(true),
+            name: Some("User One".to_string()),
+        };
+
+        let (_jar, _redirect) =
+            login_or_create_user_for_sso(&base_state, connection_id, org_id, claims_second)
+                .await
+                .unwrap();
+        let users_after = Users::find().all(db.as_ref()).await.unwrap();
+        assert_eq!(users_after.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_helpers_return_expected_error_responses() {
+        let (_db, state) = setup_db().await.unwrap();
+
+        let github_resp = oauth_callback_github(
+            &state,
+            reqwest::Client::new(),
+            "code".to_string(),
+            "verifier".to_string(),
+            CookieJar::new(),
+        )
+        .await;
+        assert_eq!(github_resp.status(), StatusCode::BAD_REQUEST);
+        let github_json = body_json(github_resp).await;
+        assert_eq!(github_json["message"], "oauth provider not configured");
+
+        let google_resp = oauth_callback_google(
+            &state,
+            reqwest::Client::new(),
+            "code".to_string(),
+            FlowCookiePayload {
+                state: "state".to_string(),
+                verifier: "verifier".to_string(),
+                nonce: Some("nonce".to_string()),
+            },
+            CookieJar::new(),
+        )
+        .await;
+        assert_eq!(google_resp.status(), StatusCode::BAD_REQUEST);
+        let google_json = body_json(google_resp).await;
+        assert_eq!(google_json["message"], "oauth provider not configured");
+    }
 }

@@ -295,12 +295,17 @@ impl SyncService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ports::{MockGithubApi, MockStorage};
     use common::build_all;
-    use common::entities::{blacklist, skill_registry};
+    use common::entities::{blacklist, prelude::*, skill_registry};
     use common::settings::Settings;
     use migration::MigratorTrait;
-    use sea_orm::{Database, Set};
+    use sea_orm::{
+        ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter, Set,
+    };
+    use std::collections::BTreeMap;
     use std::io::Write;
+    use std::sync::Arc;
     use zip::write::FileOptions;
 
     fn create_zip(files: Vec<(&str, &[u8])>) -> Vec<u8> {
@@ -317,12 +322,15 @@ mod tests {
         buf
     }
 
-    #[tokio::test]
-    async fn fetch_pending_unblacklists_expired_blacklist_entries() -> Result<()> {
-        let db = Database::connect("sqlite::memory:").await?;
-        migration::Migrator::up(&db, None).await?;
+    fn create_file_map(entries: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
+        entries
+            .iter()
+            .map(|(path, content)| ((*path).to_string(), content.as_bytes().to_vec()))
+            .collect()
+    }
 
-        let settings = Settings::new().unwrap_or_else(|_| Settings {
+    fn test_settings() -> Settings {
+        Settings::new().unwrap_or_else(|_| Settings {
             port: 3000,
             database: common::settings::DatabaseSettings {
                 url: "sqlite::memory:".to_string(),
@@ -349,26 +357,57 @@ mod tests {
             },
             auth: common::settings::AuthSettings::default(),
             debug: true,
-        });
+        })
+    }
 
-        let db_arc = std::sync::Arc::new(db.clone());
+    async fn setup_db_and_services() -> anyhow::Result<(DatabaseConnection, common::Services)> {
+        let db = Database::connect("sqlite::memory:").await?;
+        migration::Migrator::up(&db, None).await?;
+
+        let settings = test_settings();
+        let db_arc = Arc::new(db.clone());
         let (_repos, services) = build_all(db_arc, &settings).await?;
+        Ok((db, services))
+    }
 
-        let expiry_date = chrono::Utc::now().naive_utc() - chrono::Duration::days(30);
-        let old_date = expiry_date - chrono::Duration::days(1);
-
-        let repo = skill_registry::ActiveModel {
+    async fn insert_registry(
+        db: &DatabaseConnection,
+        owner: &str,
+        name: &str,
+        status: &str,
+        url: &str,
+    ) -> skill_registry::Model {
+        skill_registry::ActiveModel {
             platform: Set(skill_registry::Platform::Github),
-            owner: Set("test-owner".to_string()),
-            name: Set("test-repo".to_string()),
-            url: Set("https://github.com/test/test".to_string()),
-            status: Set("active".to_string()),
+            owner: Set(owner.to_string()),
+            name: Set(name.to_string()),
+            url: Set(url.to_string()),
+            status: Set(status.to_string()),
             stars: Set(0),
             created_at: Set(chrono::Utc::now().naive_utc()),
             updated_at: Set(chrono::Utc::now().naive_utc()),
             ..Default::default()
-        };
-        repo.insert(&db).await?;
+        }
+        .insert(db)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fetch_pending_unblacklists_expired_blacklist_entries() -> Result<()> {
+        let (db, services) = setup_db_and_services().await?;
+
+        let expiry_date = chrono::Utc::now().naive_utc() - chrono::Duration::days(30);
+        let old_date = expiry_date - chrono::Duration::days(1);
+
+        insert_registry(
+            &db,
+            "test-owner",
+            "test-repo",
+            "active",
+            "https://github.com/test/test",
+        )
+        .await;
 
         let blacklist_entry = blacklist::ActiveModel {
             repository_url: Set("https://github.com/test/test".to_string()),
@@ -380,24 +419,277 @@ mod tests {
 
         let sync_service = SyncService::new(
             db.clone(),
-            std::sync::Arc::new(crate::ports::MockStorage::new()),
-            std::sync::Arc::new(crate::ports::MockGithubApi::new()),
+            Arc::new(MockStorage::new()),
+            Arc::new(MockGithubApi::new()),
             services.registry_service,
             services.discovery_registry_service,
         );
 
         let pending = sync_service.fetch_pending().await?;
-        assert!(
-            !pending.is_empty(),
-            "Repo should be in pending since blacklist expired"
-        );
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0], 1);
+        assert_eq!(pending, vec![1]);
 
         let updated_repo = SkillRegistry::find_by_id(1).one(&db).await?.unwrap();
         assert_eq!(updated_repo.status, "active");
         assert!(updated_repo.blacklist_reason.is_none());
         assert!(updated_repo.blacklisted_at.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_one_errors_for_missing_registry() -> Result<()> {
+        let (db, services) = setup_db_and_services().await?;
+        let sync_service = SyncService::new(
+            db,
+            Arc::new(MockStorage::new()),
+            Arc::new(MockGithubApi::new()),
+            services.registry_service,
+            services.discovery_registry_service,
+        );
+
+        let err = sync_service.process_one(404).await.unwrap_err();
+        assert!(err.to_string().contains("Registry entry not found"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_one_skips_blacklisted_registry_status() -> Result<()> {
+        let (db, services) = setup_db_and_services().await?;
+        let repo = insert_registry(
+            &db,
+            "acme",
+            "blacklisted-repo",
+            "blacklisted",
+            "https://github.com/acme/blacklisted-repo",
+        )
+        .await;
+
+        let sync_service = SyncService::new(
+            db,
+            Arc::new(MockStorage::new()),
+            Arc::new(MockGithubApi::new()),
+            services.registry_service,
+            services.discovery_registry_service,
+        );
+
+        let result = sync_service.process_one(repo.id).await?;
+        assert_eq!(result.status, "SkippedBlacklisted");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_one_blacklists_repo_without_valid_skill() -> Result<()> {
+        let (db, services) = setup_db_and_services().await?;
+        let repo = insert_registry(
+            &db,
+            "acme",
+            "empty-repo",
+            "active",
+            "https://github.com/acme/empty-repo",
+        )
+        .await;
+
+        let mut github = MockGithubApi::new();
+        github
+            .expect_clone_repository_files()
+            .times(1)
+            .returning(|owner, repo, url, token| {
+                assert_eq!(owner, "acme");
+                assert_eq!(repo, "empty-repo");
+                assert_eq!(url, "https://github.com/acme/empty-repo");
+                assert!(token.is_none());
+                Ok(BTreeMap::new())
+            });
+
+        let sync_service = SyncService::new(
+            db.clone(),
+            Arc::new(MockStorage::new()),
+            Arc::new(github),
+            services.registry_service,
+            services.discovery_registry_service,
+        );
+
+        let result = sync_service.process_one(repo.id).await?;
+        assert_eq!(result.status, "Blacklisted");
+
+        let updated = SkillRegistry::find_by_id(repo.id).one(&db).await?.unwrap();
+        assert_eq!(updated.status, "blacklisted");
+        assert_eq!(
+            updated.blacklist_reason.as_deref(),
+            Some("No valid SKILL.md found")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_repo_snapshot_uploads_snapshot_archive() -> Result<()> {
+        let (db, services) = setup_db_and_services().await?;
+        let repo = insert_registry(
+            &db,
+            "acme",
+            "snapshot-repo",
+            "active",
+            "https://github.com/acme/snapshot-repo",
+        )
+        .await;
+
+        let files = create_file_map(&[(
+            "demo/SKILL.md",
+            "---
+name: demo-skill
+description: demo
+---
+# Demo
+",
+        )]);
+
+        let mut github = MockGithubApi::new();
+        github
+            .expect_clone_repository_files()
+            .times(1)
+            .returning(move |_, _, _, _| Ok(files.clone()));
+
+        let mut storage = MockStorage::new();
+        storage.expect_upload().times(1).returning(|key, body| {
+            assert!(key.starts_with("repo-snapshots/"));
+            assert!(key.ends_with(".zip"));
+            assert!(!body.is_empty());
+            Ok(format!("https://oss.local/{key}"))
+        });
+
+        let sync_service = SyncService::new(
+            db,
+            Arc::new(storage),
+            Arc::new(github),
+            services.registry_service,
+            services.discovery_registry_service,
+        );
+
+        let snapshot = sync_service.fetch_repo_snapshot(repo.id).await?;
+        match snapshot {
+            SnapshotResult::Snapshot(snapshot_ref) => {
+                assert_eq!(snapshot_ref.registry_id, repo.id);
+                assert!(snapshot_ref.snapshot_s3_key.starts_with("repo-snapshots/"));
+            }
+            SnapshotResult::Skipped { .. } => panic!("expected snapshot output"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn apply_sync_from_snapshot_blacklists_invalid_zip() -> Result<()> {
+        let (db, services) = setup_db_and_services().await?;
+        let repo = insert_registry(
+            &db,
+            "acme",
+            "invalid-zip-repo",
+            "active",
+            "https://github.com/acme/invalid-zip-repo",
+        )
+        .await;
+
+        let mut storage = MockStorage::new();
+        storage
+            .expect_download()
+            .times(1)
+            .returning(|_| Ok(vec![0, 1, 2, 3]));
+
+        let sync_service = SyncService::new(
+            db.clone(),
+            Arc::new(storage),
+            Arc::new(MockGithubApi::new()),
+            services.registry_service,
+            services.discovery_registry_service,
+        );
+
+        let snapshot = domain::RepoSnapshotRef {
+            registry_id: repo.id,
+            owner: repo.owner.clone(),
+            name: repo.name.clone(),
+            url: repo.url.clone(),
+            zip_hash: "deadbeef".to_string(),
+            snapshot_s3_key: "repo-snapshots/invalid.zip".to_string(),
+        };
+
+        let result = sync_service.apply_sync_from_snapshot(&snapshot).await?;
+        assert_eq!(result.status, "Blacklisted");
+
+        let updated = SkillRegistry::find_by_id(repo.id).one(&db).await?.unwrap();
+        assert_eq!(updated.status, "blacklisted");
+        assert!(updated
+            .blacklist_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Invalid zip archive"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn apply_sync_from_snapshot_processes_valid_archive() -> Result<()> {
+        let (db, services) = setup_db_and_services().await?;
+        let repo = insert_registry(
+            &db,
+            "acme",
+            "valid-zip-repo",
+            "active",
+            "https://github.com/acme/valid-zip-repo",
+        )
+        .await;
+
+        let zip_bytes = create_zip(vec![(
+            "skill/SKILL.md",
+            b"---
+name: zip-skill
+description: zip skill
+metadata:
+  version: 1.0.0
+---
+# Body
+",
+        )]);
+
+        let mut storage = MockStorage::new();
+        storage
+            .expect_download()
+            .times(1)
+            .returning(move |_| Ok(zip_bytes.clone()));
+        storage
+            .expect_upload()
+            .times(1)
+            .returning(|key, _| Ok(format!("https://oss.local/{key}")));
+
+        let sync_service = SyncService::new(
+            db.clone(),
+            Arc::new(storage),
+            Arc::new(MockGithubApi::new()),
+            services.registry_service,
+            services.discovery_registry_service,
+        );
+
+        let snapshot = domain::RepoSnapshotRef {
+            registry_id: repo.id,
+            owner: repo.owner.clone(),
+            name: repo.name.clone(),
+            url: repo.url.clone(),
+            zip_hash: "hash".to_string(),
+            snapshot_s3_key: "repo-snapshots/valid.zip".to_string(),
+        };
+
+        let result = sync_service.apply_sync_from_snapshot(&snapshot).await?;
+        assert_eq!(result.status, "Updated");
+
+        let updated = SkillRegistry::find_by_id(repo.id).one(&db).await?.unwrap();
+        assert_eq!(updated.status, "active");
+        assert_eq!(updated.repo_type.as_deref(), Some("skill"));
+
+        let skills = Skills::find()
+            .filter(common::entities::skills::Column::SkillRegistryId.eq(repo.id))
+            .all(&db)
+            .await?;
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "zip-skill");
 
         Ok(())
     }

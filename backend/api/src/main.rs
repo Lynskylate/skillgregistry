@@ -57,9 +57,23 @@ async fn main() -> anyhow::Result<()> {
         allowed_frontend_origins: Arc::clone(&allowed_frontend_origins),
     });
 
-    let cors = build_cors(settings.debug, Arc::clone(&allowed_frontend_origins));
+    let app: Router = build_app(state);
 
-    let app: Router = Router::new()
+    let addr = SocketAddr::from(([0, 0, 0, 0], settings.port));
+    tracing::info!("listening on {}", addr);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+fn build_app(state: Arc<AppState>) -> Router {
+    let cors = build_cors(
+        state.settings.debug,
+        Arc::clone(&state.allowed_frontend_origins),
+    );
+
+    Router::new()
         .route("/", get(|| async { "Skill Registry API" }))
         .route("/api/skills", get(handlers::list_skills))
         .route(
@@ -121,14 +135,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .nest("/api/auth", auth::router())
         .layer(cors)
-        .with_state(state);
-
-    let addr = SocketAddr::from(([0, 0, 0, 0], settings.port));
-    tracing::info!("listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
+        .with_state(state)
 }
 
 fn build_cors(debug: bool, allowed_origins: Arc<Vec<String>>) -> CorsLayer {
@@ -152,5 +159,56 @@ fn build_cors(debug: bool, allowed_origins: Arc<Vec<String>>) -> CorsLayer {
                 .allow_methods(Any)
         }
         _ => CorsLayer::permissive(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use migration::MigratorTrait;
+    use tower::ServiceExt;
+
+    async fn setup_state() -> Arc<AppState> {
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        migration::Migrator::up(&db, None).await.unwrap();
+
+        let mut settings = Settings::default();
+        settings.database.url = "sqlite::memory:".to_string();
+        settings.auth.jwt.signing_key = Some("test-signing-key".to_string());
+        settings.debug = true;
+
+        let db_arc = Arc::new(db);
+        let (repos, services) = common::build_all(db_arc.clone(), &settings).await.unwrap();
+
+        Arc::new(AppState {
+            db: db_arc,
+            settings,
+            services,
+            repos,
+            allowed_frontend_origins: Arc::new(vec![]),
+        })
+    }
+
+    #[tokio::test]
+    async fn build_app_serves_root_route() {
+        let state = setup_state().await;
+        let app = build_app(state);
+
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Skill Registry API");
+    }
+
+    #[test]
+    fn build_cors_is_permissive_for_debug_or_empty_allowlist() {
+        let _ = build_cors(true, Arc::new(vec!["https://app.example.com".to_string()]));
+        let _ = build_cors(false, Arc::new(vec![]));
+        let _ = build_cors(false, Arc::new(vec!["https://app.example.com".to_string()]));
     }
 }
