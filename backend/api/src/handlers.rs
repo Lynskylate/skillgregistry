@@ -102,7 +102,7 @@ pub struct ValidateDeleteResponse {
 
 #[derive(Deserialize)]
 pub struct DeleteDiscoveryRegistryRequest {
-    pub confirmation_id: Option<String>,
+    pub confirmation_id: String,
 }
 
 fn map_provider(platform: &discovery_registries::Platform) -> String {
@@ -554,14 +554,21 @@ pub async fn delete_discovery_registry(
         return Json(ApiResponse::error(403, "admin access required".to_string()));
     }
 
-    let confirmation_id = payload.and_then(|Json(req)| req.confirmation_id);
-    if let Some(conf) = confirmation_id {
-        if conf != id.to_string() {
+    let confirmation_id = match payload {
+        Some(Json(req)) if !req.confirmation_id.trim().is_empty() => req.confirmation_id,
+        _ => {
             return Json(ApiResponse::error(
                 400,
-                "Confirmation ID does not match registry ID".to_string(),
+                "confirmation_id is required to delete registry".to_string(),
             ));
         }
+    };
+
+    if confirmation_id != id.to_string() {
+        return Json(ApiResponse::error(
+            400,
+            "Confirmation ID does not match registry ID".to_string(),
+        ));
     }
 
     match state
