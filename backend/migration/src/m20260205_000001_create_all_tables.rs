@@ -13,12 +13,15 @@ impl MigrationTrait for Migration {
                     .col(pk_auto(DiscoveryRegistries::Id))
                     .col(string_len(DiscoveryRegistries::Platform, 32))
                     .col(text(DiscoveryRegistries::Token))
+                    .col(text(DiscoveryRegistries::ApiUrl))
                     .col(text(DiscoveryRegistries::QueriesJson))
                     .col(big_integer(DiscoveryRegistries::ScheduleIntervalSeconds))
                     .col(string_len_null(DiscoveryRegistries::LastHealthStatus, 32))
                     .col(text_null(DiscoveryRegistries::LastHealthMessage))
                     .col(date_time_null(DiscoveryRegistries::LastHealthCheckedAt))
                     .col(date_time_null(DiscoveryRegistries::LastRunAt))
+                    .col(string_len_null(DiscoveryRegistries::LastRunStatus, 32))
+                    .col(text_null(DiscoveryRegistries::LastRunMessage))
                     .col(date_time_null(DiscoveryRegistries::NextRunAt))
                     .col(date_time(DiscoveryRegistries::CreatedAt))
                     .col(date_time(DiscoveryRegistries::UpdatedAt))
@@ -46,6 +49,7 @@ impl MigrationTrait for Migration {
                     .col(string(SkillRegistry::Owner))
                     .col(string(SkillRegistry::Name))
                     .col(string(SkillRegistry::Url))
+                    .col(string_null(SkillRegistry::Host))
                     .col(text_null(SkillRegistry::Description))
                     .col(string_null(SkillRegistry::RepoType))
                     .col(string(SkillRegistry::Status))
@@ -77,6 +81,18 @@ impl MigrationTrait for Migration {
             .await?;
 
         manager
+            .create_index(
+                Index::create()
+                    .name("idx_skill_registry_host_owner_name")
+                    .table(SkillRegistry::Table)
+                    .col(SkillRegistry::Host)
+                    .col(SkillRegistry::Owner)
+                    .col(SkillRegistry::Name)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
             .create_table(
                 Table::create()
                     .table(Skills::Table)
@@ -84,6 +100,7 @@ impl MigrationTrait for Migration {
                     .col(string(Skills::Name))
                     .col(integer(Skills::SkillRegistryId))
                     .col(string_null(Skills::LatestVersion))
+                    .col(integer(Skills::InstallCount).default(0))
                     .col(integer(Skills::IsActive))
                     .col(date_time(Skills::CreatedAt))
                     .col(date_time(Skills::UpdatedAt))
@@ -413,6 +430,14 @@ impl MigrationTrait for Migration {
         manager
             .drop_index(
                 Index::drop()
+                    .name("idx_skill_registry_host_owner_name")
+                    .table(SkillRegistry::Table)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_index(
+                Index::drop()
                     .name("idx_skill_registry_discovery_registry_id")
                     .table(SkillRegistry::Table)
                     .to_owned(),
@@ -487,12 +512,15 @@ enum DiscoveryRegistries {
     Id,
     Platform,
     Token,
+    ApiUrl,
     QueriesJson,
     ScheduleIntervalSeconds,
     LastHealthStatus,
     LastHealthMessage,
     LastHealthCheckedAt,
     LastRunAt,
+    LastRunStatus,
+    LastRunMessage,
     NextRunAt,
     CreatedAt,
     UpdatedAt,
@@ -507,6 +535,7 @@ enum SkillRegistry {
     Owner,
     Name,
     Url,
+    Host,
     Description,
     RepoType,
     Status,
@@ -525,6 +554,7 @@ enum Skills {
     Name,
     SkillRegistryId,
     LatestVersion,
+    InstallCount,
     IsActive,
     CreatedAt,
     UpdatedAt,

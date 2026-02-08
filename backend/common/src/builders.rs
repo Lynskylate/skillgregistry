@@ -46,9 +46,12 @@ pub fn build_github_service(token: Option<String>, api_url: String) -> Arc<dyn G
 }
 
 pub async fn build_services(repos: &Repositories, settings: &Settings) -> Services {
+    let s3 = build_s3_service(&settings.s3).await;
+
     let skill_service = Arc::new(SkillServiceImpl::new(
         repos.skill_repo.clone(),
         repos.registry_repo.clone(),
+        s3.clone(),
     ));
 
     let plugin_service = Arc::new(PluginServiceImpl::new(
@@ -67,8 +70,6 @@ pub async fn build_services(repos: &Repositories, settings: &Settings) -> Servic
         settings.github.token.clone(),
         settings.github.api_url.clone(),
     );
-
-    let s3 = build_s3_service(&settings.s3).await;
 
     Services {
         skill_service,

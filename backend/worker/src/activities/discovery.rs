@@ -14,6 +14,16 @@ pub struct DiscoveryResult {
     pub touched_repo_ids: Vec<i32>,
 }
 
+fn extract_repo_host(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
 pub struct DiscoveryActivities {
     db: Arc<DatabaseConnection>,
     github: Arc<dyn GithubApi>,
@@ -89,7 +99,13 @@ impl DiscoveryActivities {
         let interval = std::cmp::max(config.schedule_interval_seconds, 60);
         let next_run_at = now + chrono::Duration::seconds(interval);
         service
-            .mark_run(registry_id, now, next_run_at)
+            .mark_run(
+                registry_id,
+                now,
+                next_run_at,
+                Some("success".to_string()),
+                Some("Discovery workflow completed".to_string()),
+            )
             .await
             .map_err(ActivityError::from)?;
 
@@ -152,12 +168,29 @@ impl DiscoveryActivities {
                             continue;
                         }
 
+                        let repo_host = extract_repo_host(&repo.html_url);
+
                         // Check if exists
-                        let existing = SkillRegistry::find()
+                        let mut existing_query = SkillRegistry::find()
                             .filter(skill_registry::Column::Name.eq(&repo.name))
-                            .filter(skill_registry::Column::Owner.eq(&repo.owner.login))
-                            .one(&*self.db)
-                            .await?;
+                            .filter(skill_registry::Column::Owner.eq(&repo.owner.login));
+
+                        if let Some(host) = repo_host.as_deref() {
+                            existing_query = existing_query.filter(
+                                Condition::any()
+                                    .add(skill_registry::Column::Host.eq(host))
+                                    .add(
+                                        skill_registry::Column::Url
+                                            .like(format!("https://{}/%", host)),
+                                    )
+                                    .add(
+                                        skill_registry::Column::Url
+                                            .like(format!("http://{}/%", host)),
+                                    ),
+                            );
+                        }
+
+                        let existing = existing_query.one(&*self.db).await?;
 
                         if let Some(existing_model) = existing {
                             // Update existing
@@ -165,6 +198,7 @@ impl DiscoveryActivities {
                             active.stars = Set(repo.stargazers_count);
                             active.updated_at = Set(repo.updated_at.naive_utc());
                             active.last_scanned_at = Set(Some(chrono::Utc::now().naive_utc()));
+                            active.host = Set(repo_host.clone());
                             if let Some(id) = discovery_registry_id {
                                 active.discovery_registry_id = Set(Some(id));
                             }
@@ -179,6 +213,7 @@ impl DiscoveryActivities {
                                 owner: Set(repo.owner.login.clone()),
                                 name: Set(repo.name.clone()),
                                 url: Set(repo.html_url.clone()),
+                                host: Set(repo_host.clone()),
                                 description: Set(repo.description.clone()),
                                 status: Set("active".to_string()),
                                 stars: Set(repo.stargazers_count),
@@ -236,6 +271,7 @@ mod tests {
                     owner: "test-owner".to_string(),
                     name: "test-repo".to_string(),
                     url: "https://github.com/test-owner/test-repo".to_string(),
+                    host: Some("github.com".to_string()),
                     description: Some("test description".to_string()),
                     repo_type: None,
                     status: "active".to_string(),

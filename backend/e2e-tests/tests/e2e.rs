@@ -167,6 +167,11 @@ struct SkillListItemDto {
     repo: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SkillListPageDto {
+    items: Vec<SkillListItemDto>,
+}
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 struct SkillKey {
     owner: String,
@@ -886,12 +891,13 @@ async fn fetch_skills_page_from_api(
             )
         })?;
 
-    let (_status, envelope): (StatusCode, ApiEnvelope<Vec<SkillListItemDto>>) =
+    let (_status, envelope): (StatusCode, ApiEnvelope<SkillListPageDto>) =
         parse_api_envelope(response, "list skills").await?;
 
-    let items = require_api_success(envelope, "list skills")?;
+    let page = require_api_success(envelope, "list skills")?;
 
-    Ok(items
+    Ok(page
+        .items
         .into_iter()
         .map(|item| SkillKey {
             owner: item.owner,

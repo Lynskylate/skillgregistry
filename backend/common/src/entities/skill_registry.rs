@@ -20,6 +20,7 @@ pub struct Model {
     pub owner: String,
     pub name: String,
     pub url: String,
+    pub host: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub description: Option<String>,
     pub repo_type: Option<String>,

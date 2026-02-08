@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { useParams, Link } from "react-router-dom"
 import { api } from "@/lib/api"
+import type { ApiResponse } from "@/lib/types"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
@@ -8,11 +9,11 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ChevronRight, Calendar, Star, Github, Terminal } from "lucide-react"
 
-interface SkillDetail {
+type SkillDetailPayload = {
   skill: {
     id: number
     name: string
-    latest_version: string
+    latest_version: string | null
     created_at: string
     updated_at: string
   }
@@ -24,50 +25,69 @@ interface SkillDetail {
   }
   versions: {
     version: string
-    readme_content: string
+    readme_content: string | null
     created_at: string
+    metadata?: Record<string, unknown> | null
   }[]
+  install_count: number
+  last_synced_at: string | null
+  license: string | null
+  compatibility: string[] | null
+  allowed_tools: string[] | null
+  homepage: string | null
+  documentation_url: string | null
+}
+
+type DownloadSkillResponse = {
+  download_url: string
+  expires_at: string
+  md5: string | null
+  version: string
+  file_size: number | null
 }
 
 export default function SkillDetail() {
-  const { owner, repo, name } = useParams()
-  const [data, setData] = useState<SkillDetail | null>(null)
+  const { host, org, repo, name } = useParams()
+  const [data, setData] = useState<SkillDetailPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<"readme" | "versions">("readme")
   const [copiedInstallCommand, setCopiedInstallCommand] = useState(false)
+  const [downloading, setDownloading] = useState(false)
 
   useEffect(() => {
-    if (owner && repo && name) {
+    if (host && org && repo && name) {
       fetchSkill()
     }
-  }, [owner, repo, name])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [host, org, repo, name])
 
   const fetchSkill = async () => {
     setLoading(true)
     try {
-      const res = await api.get(`/api/skills/${owner}/${repo}/${name}`)
-      if (res.data.code === 200) {
+      const res = await api.get<ApiResponse<SkillDetailPayload>>(`/api/${host}/${org}/${repo}/skill/${name}`)
+      if (res.data.code === 200 && res.data.data) {
         setData(res.data.data)
+      } else {
+        setData(null)
       }
     } catch (error) {
       console.error("Failed to fetch skill details", error)
+      setData(null)
     } finally {
       setLoading(false)
     }
   }
 
   const copyText = async (text: string) => {
-    // Try modern clipboard API first (only works in secure contexts)
     if (window.isSecureContext && navigator.clipboard) {
       try {
         await navigator.clipboard.writeText(text)
         return true
       } catch {
-        // Fall through to fallback method
+        // fallback below
       }
     }
 
-    // Fallback: use textarea method for non-secure contexts
     try {
       const textarea = document.createElement("textarea")
       textarea.value = text
@@ -91,6 +111,23 @@ export default function SkillDetail() {
     if (copied) {
       setCopiedInstallCommand(true)
       window.setTimeout(() => setCopiedInstallCommand(false), 1200)
+    }
+  }
+
+  const downloadSkill = async () => {
+    if (!host || !org || !repo || !name) return
+    setDownloading(true)
+    try {
+      const res = await api.get<ApiResponse<DownloadSkillResponse>>(
+        `/api/${host}/${org}/${repo}/skill/${name}/download`,
+      )
+      if (res.data.code === 200 && res.data.data) {
+        window.location.href = res.data.data.download_url
+      }
+    } catch (error) {
+      console.error("Failed to download skill", error)
+    } finally {
+      setDownloading(false)
     }
   }
 
@@ -124,9 +161,11 @@ export default function SkillDetail() {
       <div className="flex flex-wrap items-center text-sm text-muted-foreground">
         <Link to="/" className="hover:text-primary">Skills</Link>
         <ChevronRight className="h-4 w-4 mx-2" />
-        <Link to={`/${data.registry.owner}`} className="hover:text-primary">{data.registry.owner}</Link>
+        <Link to={`/${host}`} className="hover:text-primary">{host}</Link>
         <ChevronRight className="h-4 w-4 mx-2" />
-        <Link to={`/${data.registry.owner}/${data.registry.name}`} className="hover:text-primary">{data.registry.name}</Link>
+        <Link to={`/${host}/${org}`} className="hover:text-primary">{org}</Link>
+        <ChevronRight className="h-4 w-4 mx-2" />
+        <Link to={`/${host}/${org}/${repo}`} className="hover:text-primary">{repo}</Link>
         <ChevronRight className="h-4 w-4 mx-2" />
         <span className="text-foreground font-medium">{data.skill.name}</span>
       </div>
@@ -137,16 +176,16 @@ export default function SkillDetail() {
           <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
             <span className="flex items-center gap-1">
               <Github className="h-4 w-4" />
-              {data.registry.owner}/{data.registry.name}
+              {host}/{data.registry.owner}/{data.registry.name}
             </span>
             <span className="flex items-center gap-1">
               <Star className="h-4 w-4" />
               {data.registry.stars} stars
             </span>
-            <Badge variant="secondary">v{data.skill.latest_version}</Badge>
+            {data.skill.latest_version && <Badge variant="secondary">v{data.skill.latest_version}</Badge>}
           </div>
         </div>
-        <div className="w-full md:w-auto">
+        <div className="w-full md:w-auto space-y-2">
           <div className="bg-zinc-950 text-zinc-50 px-4 py-3 rounded-md font-mono text-sm flex items-center gap-4 shadow-sm border border-zinc-800">
             <Terminal className="h-4 w-4 text-zinc-400" />
             <span className="truncate">npx skills add {data.registry.owner}/{data.registry.name} --skill {data.skill.name}</span>
@@ -160,6 +199,9 @@ export default function SkillDetail() {
               {copiedInstallCommand ? "Copied" : "Copy"}
             </Button>
           </div>
+          <Button onClick={downloadSkill} disabled={downloading} className="w-full">
+            {downloading ? "Preparing download..." : `Download ${data.skill.latest_version ?? "latest"}`}
+          </Button>
         </div>
       </div>
 
@@ -204,14 +246,6 @@ export default function SkillDetail() {
                         {new Date(v.created_at).toLocaleDateString()}
                       </span>
                     </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled
-                      title="Version detail view will be available in the next iteration"
-                    >
-                      View
-                    </Button>
                   </div>
                 ))}
               </div>
@@ -229,17 +263,54 @@ export default function SkillDetail() {
                 Published {new Date(data.skill.created_at).toLocaleDateString()}
               </div>
               <div className="text-sm text-muted-foreground">
-                License information coming in a future update.
+                Installs: <span className="font-medium text-foreground">{data.install_count ?? 0}</span>
               </div>
-              <div className="pt-4 border-t">
-                <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Maintainer</h4>
-                <div className="flex items-center gap-2">
-                  <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center font-bold text-primary">
-                    {data.registry.owner[0].toUpperCase()}
-                  </div>
-                  <span className="text-sm font-medium">{data.registry.owner}</span>
+              {data.last_synced_at && (
+                <div className="text-sm text-muted-foreground">
+                  Last synced: {new Date(data.last_synced_at).toLocaleString()}
                 </div>
-              </div>
+              )}
+              {data.license && (
+                <div>
+                  <span className="text-sm text-muted-foreground">License: </span>
+                  <Badge variant="secondary">{data.license}</Badge>
+                </div>
+              )}
+              {data.compatibility && data.compatibility.length > 0 && (
+                <div>
+                  <span className="text-sm text-muted-foreground">Compatibility:</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {data.compatibility.map((tag, index) => (
+                      <Badge key={`${tag}-${index}`} variant="outline">{tag}</Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {data.allowed_tools && data.allowed_tools.length > 0 && (
+                <div>
+                  <span className="text-sm text-muted-foreground">Allowed Tools:</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {data.allowed_tools.map((tool, index) => (
+                      <Badge key={`${tool}-${index}`} variant="outline">{tool}</Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {data.homepage && (
+                <a href={data.homepage} target="_blank" rel="noopener noreferrer" className="text-sm text-primary hover:underline block">
+                  Homepage
+                </a>
+              )}
+              {data.documentation_url && (
+                <a
+                  href={data.documentation_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-primary hover:underline block"
+                >
+                  Documentation
+                </a>
+              )}
             </CardContent>
           </Card>
         </div>

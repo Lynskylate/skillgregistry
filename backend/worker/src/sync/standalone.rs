@@ -4,7 +4,124 @@ use anyhow::Result;
 use common::domain::{archive, markdown, skill};
 use common::entities::{prelude::*, skill_registry, skill_versions, skills};
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
+
+fn parse_csv_or_single(raw: &str) -> Vec<String> {
+    let parts = raw
+        .split(',')
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    if parts.is_empty() && !raw.trim().is_empty() {
+        vec![raw.trim().to_string()]
+    } else {
+        parts
+    }
+}
+
+fn ensure_array_string(value: &Value) -> Option<Vec<String>> {
+    if let Some(array) = value.as_array() {
+        let values = array
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        return if values.is_empty() {
+            None
+        } else {
+            Some(values)
+        };
+    }
+
+    value.as_str().and_then(|raw| {
+        let parsed = parse_csv_or_single(raw);
+        if parsed.is_empty() {
+            None
+        } else {
+            Some(parsed)
+        }
+    })
+}
+
+fn normalize_skill_metadata(frontmatter: &skill::SkillFrontmatter) -> Option<Value> {
+    let mut map = frontmatter
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.as_object().cloned())
+        .unwrap_or_default();
+
+    if let Some(license) = frontmatter.license.as_ref() {
+        map.insert("license".to_string(), Value::String(license.clone()));
+    }
+
+    if let Some(compatibility) = frontmatter.compatibility.as_ref() {
+        let values = parse_csv_or_single(compatibility)
+            .into_iter()
+            .map(Value::String)
+            .collect::<Vec<_>>();
+        if !values.is_empty() {
+            map.insert("compatibility".to_string(), Value::Array(values));
+        }
+    } else if let Some(existing) = map.get("compatibility").and_then(ensure_array_string) {
+        map.insert(
+            "compatibility".to_string(),
+            Value::Array(existing.into_iter().map(Value::String).collect()),
+        );
+    }
+
+    if let Some(allowed_tools) = frontmatter.allowed_tools.as_ref() {
+        let values = parse_csv_or_single(allowed_tools)
+            .into_iter()
+            .map(Value::String)
+            .collect::<Vec<_>>();
+        if !values.is_empty() {
+            map.insert("allowed-tools".to_string(), Value::Array(values));
+        }
+    } else {
+        let existing_allowed = map
+            .get("allowed-tools")
+            .or_else(|| map.get("allowed_tools"))
+            .and_then(ensure_array_string);
+        if let Some(existing) = existing_allowed {
+            map.insert(
+                "allowed-tools".to_string(),
+                Value::Array(existing.into_iter().map(Value::String).collect()),
+            );
+        }
+    }
+    map.remove("allowed_tools");
+
+    if !map.contains_key("homepage") {
+        if let Some(url) = map.get("url").and_then(|value| value.as_str()) {
+            if !url.trim().is_empty() {
+                map.insert(
+                    "homepage".to_string(),
+                    Value::String(url.trim().to_string()),
+                );
+            }
+        }
+    }
+
+    if !map.contains_key("documentation_url") {
+        if let Some(docs) = map.get("docs").and_then(|value| value.as_str()) {
+            if !docs.trim().is_empty() {
+                map.insert(
+                    "documentation_url".to_string(),
+                    Value::String(docs.trim().to_string()),
+                );
+            }
+        }
+    }
+
+    if map.is_empty() {
+        None
+    } else {
+        Some(Value::Object(map))
+    }
+}
 
 struct SkillRepoHelper<'a> {
     db: &'a DatabaseConnection,
@@ -317,7 +434,7 @@ pub async fn sync_standalone_skills(
                 Some(s3_key.clone()),
                 Some(oss_url.clone()),
                 Some(package_hash.clone()),
-                frontmatter.metadata.clone(),
+                normalize_skill_metadata(&frontmatter),
             )
             .await?;
         changed = true;

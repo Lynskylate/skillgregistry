@@ -33,3 +33,5 @@ Thumbs.db
 *.db-wal
 .trae/
 .worktree/
+
+__pycache__/

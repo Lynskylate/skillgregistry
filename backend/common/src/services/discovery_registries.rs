@@ -18,6 +18,8 @@ pub struct DiscoveryRegistryConfig {
     pub last_health_message: Option<String>,
     pub last_health_checked_at: Option<chrono::NaiveDateTime>,
     pub last_run_at: Option<chrono::NaiveDateTime>,
+    pub last_run_status: Option<String>,
+    pub last_run_message: Option<String>,
     pub next_run_at: Option<chrono::NaiveDateTime>,
     pub created_at: chrono::NaiveDateTime,
     pub updated_at: chrono::NaiveDateTime,
@@ -57,6 +59,8 @@ pub trait DiscoveryRegistryService: Send + Sync {
         id: i32,
         last_run_at: chrono::NaiveDateTime,
         next_run_at: chrono::NaiveDateTime,
+        status: Option<String>,
+        message: Option<String>,
     ) -> Result<(), DbErr>;
 
     async fn update_health(
@@ -98,6 +102,8 @@ impl DiscoveryRegistryServiceImpl {
             last_health_message: model.last_health_message,
             last_health_checked_at: model.last_health_checked_at,
             last_run_at: model.last_run_at,
+            last_run_status: model.last_run_status,
+            last_run_message: model.last_run_message,
             next_run_at: model.next_run_at,
             created_at: model.created_at,
             updated_at: model.updated_at,
@@ -194,9 +200,18 @@ impl DiscoveryRegistryService for DiscoveryRegistryServiceImpl {
         id: i32,
         last_run_at: chrono::NaiveDateTime,
         next_run_at: chrono::NaiveDateTime,
+        status: Option<String>,
+        message: Option<String>,
     ) -> Result<(), DbErr> {
         self.repo
-            .update_run_timestamps(id, last_run_at, next_run_at, chrono::Utc::now().naive_utc())
+            .update_run_timestamps(
+                id,
+                last_run_at,
+                next_run_at,
+                status,
+                message,
+                chrono::Utc::now().naive_utc(),
+            )
             .await
     }
 

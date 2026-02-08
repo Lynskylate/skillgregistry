@@ -152,9 +152,10 @@ function AppContent() {
               </RequireAdmin>
             )}
           />
-          <Route path="/:owner" element={<SkillList />} />
-          <Route path="/:owner/:repo" element={<SkillList />} />
-          <Route path="/:owner/:repo/:name" element={<SkillDetail />} />
+          <Route path="/:host" element={<SkillList />} />
+          <Route path="/:host/:org" element={<SkillList />} />
+          <Route path="/:host/:org/:repo" element={<SkillList />} />
+          <Route path="/:host/:org/:repo/skill/:name" element={<SkillDetail />} />
         </Routes>
       </main>
     </div>

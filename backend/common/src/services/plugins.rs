@@ -222,7 +222,7 @@ impl PluginService for PluginServiceImpl {
                 description,
                 origin: SkillOriginDto::Standalone {
                     latest_version: s.latest_version.clone(),
-                    ref_api: format!("/api/skills/{}/{}/{}", org, repo, s.name),
+                    ref_api: format!("/api/{}/{}/{}/skill/{}", host, org, repo, s.name),
                 },
             });
         }

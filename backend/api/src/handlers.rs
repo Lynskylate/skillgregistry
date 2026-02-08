@@ -8,7 +8,7 @@ use chrono::Utc;
 use common::entities::discovery_registries;
 use common::plugins::{PluginListItemDto, SkillSummaryDto};
 use common::repositories::skills::ListSkillsParams;
-use common::skills::SkillDto;
+use common::skills::{DownloadSkillResult, PaginatedSkillsResponse};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -25,8 +25,12 @@ pub struct SearchParams {
     pub per_page: Option<u64>,
     pub owner: Option<String>,
     pub repo: Option<String>,
+    pub host: Option<String>,
+    pub org: Option<String>,
     pub sort_by: Option<String>,
     pub order: Option<String>,
+    pub compatibility: Option<String>,
+    pub has_version: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -41,6 +45,8 @@ pub struct DiscoveryRegistryDto {
     pub last_health_message: Option<String>,
     pub last_health_checked_at: Option<chrono::NaiveDateTime>,
     pub last_run_at: Option<chrono::NaiveDateTime>,
+    pub last_run_status: Option<String>,
+    pub last_run_message: Option<String>,
     pub next_run_at: Option<chrono::NaiveDateTime>,
     pub created_at: chrono::NaiveDateTime,
     pub updated_at: chrono::NaiveDateTime,
@@ -68,11 +74,35 @@ pub struct DiscoveryRegistryHealthTestDto {
     pub ok: bool,
     pub message: String,
     pub checked_at: chrono::NaiveDateTime,
+    pub started_at: Option<chrono::NaiveDateTime>,
 }
 
 #[derive(Serialize)]
 pub struct TriggerWorkflowDto {
+    pub ok: bool,
+    pub message: String,
     pub workflow_id: String,
+    pub started_at: chrono::NaiveDateTime,
+}
+
+#[derive(Serialize)]
+pub struct DownloadSkillResponse {
+    pub download_url: String,
+    pub expires_at: String,
+    pub md5: Option<String>,
+    pub version: String,
+    pub file_size: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct ValidateDeleteResponse {
+    pub can_delete: bool,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DeleteDiscoveryRegistryRequest {
+    pub confirmation_id: Option<String>,
 }
 
 fn map_provider(platform: &discovery_registries::Platform) -> String {
@@ -122,6 +152,8 @@ fn to_registry_dto(
         last_health_message: config.last_health_message.clone(),
         last_health_checked_at: config.last_health_checked_at,
         last_run_at: config.last_run_at,
+        last_run_status: config.last_run_status.clone(),
+        last_run_message: config.last_run_message.clone(),
         next_run_at: config.next_run_at,
         created_at: config.created_at,
         updated_at: config.updated_at,
@@ -156,55 +188,79 @@ fn create_json_payload(
 pub async fn list_skills(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchParams>,
-) -> Json<ApiResponse<Vec<SkillDto>>> {
+) -> Json<ApiResponse<PaginatedSkillsResponse>> {
     let list_params = ListSkillsParams {
-        query: params.q.as_deref(),
+        host: params.host.as_deref(),
+        org: params.org.as_deref(),
         owner: params.owner.as_deref(),
         repo: params.repo.as_deref(),
+        query: params.q.as_deref(),
         sort_by: params.sort_by.as_deref(),
         order: params.order.as_deref(),
+        compatibility: params.compatibility.as_deref(),
+        has_version: params.has_version,
         page: params.page.unwrap_or(1),
         per_page: params.per_page.unwrap_or(20),
     };
+
     match state.services.skill_service.list_skills(list_params).await {
-        Ok(dtos) => Json(ApiResponse::success(dtos)),
-        Err(e) => Json(ApiResponse::error(500, e.to_string())),
+        Ok(result) => Json(ApiResponse::success(result)),
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
     }
 }
 
-pub async fn get_skill(
+pub async fn get_repo_skill_detail(
     State(state): State<Arc<AppState>>,
-    Path((owner, repo, name)): Path<(String, String, String)>,
-) -> Json<ApiResponse<serde_json::Value>> {
+    Path((host, org, repo, name)): Path<(String, String, String, String)>,
+) -> Json<ApiResponse<common::skills::SkillDetail>> {
     match state
         .services
         .skill_service
-        .get_skill(&owner, &repo, &name)
+        .get_skill_by_host(&host, &org, &repo, &name)
         .await
     {
-        Ok(result) => {
-            let value = serde_json::to_value(&result).unwrap_or_default();
-            Json(ApiResponse::success(value))
-        }
-        Err(e) => Json(ApiResponse::error(404, e.to_string())),
+        Ok(result) => Json(ApiResponse::success(result)),
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
     }
 }
 
-pub async fn get_skill_version(
+pub async fn get_repo_skill_version(
     State(state): State<Arc<AppState>>,
-    Path((owner, repo, name, version)): Path<(String, String, String, String)>,
-) -> Json<ApiResponse<serde_json::Value>> {
+    Path((host, org, repo, name, version)): Path<(String, String, String, String, String)>,
+) -> Json<ApiResponse<common::skills::SkillVersionDetail>> {
     match state
         .services
         .skill_service
-        .get_skill_version(&owner, &repo, &name, &version)
+        .get_skill_version_by_host(&host, &org, &repo, &name, &version)
         .await
     {
-        Ok(result) => {
-            let value = serde_json::to_value(&result).unwrap_or_default();
-            Json(ApiResponse::success(value))
-        }
-        Err(e) => Json(ApiResponse::error(404, e.to_string())),
+        Ok(result) => Json(ApiResponse::success(result)),
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
+    }
+}
+
+fn to_download_response(result: DownloadSkillResult) -> DownloadSkillResponse {
+    DownloadSkillResponse {
+        download_url: result.download_url,
+        expires_at: result.expires_at.to_rfc3339(),
+        md5: result.md5,
+        version: result.version,
+        file_size: result.file_size,
+    }
+}
+
+pub async fn download_repo_skill(
+    State(state): State<Arc<AppState>>,
+    Path((host, org, repo, name)): Path<(String, String, String, String)>,
+) -> Json<ApiResponse<DownloadSkillResponse>> {
+    match state
+        .services
+        .skill_service
+        .download_skill(&host, &org, &repo, &name)
+        .await
+    {
+        Ok(result) => Json(ApiResponse::success(to_download_response(result))),
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
     }
 }
 
@@ -219,7 +275,7 @@ pub async fn list_repo_plugins(
         .await
     {
         Ok(dtos) => Json(ApiResponse::success(dtos)),
-        Err(e) => Json(ApiResponse::error(500, e.to_string())),
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
     }
 }
 
@@ -233,11 +289,14 @@ pub async fn get_repo_plugin(
         .get_repo_plugin(&host, &org, &repo, &plugin_name)
         .await
     {
-        Ok(result) => {
-            let value = serde_json::to_value(&result).unwrap_or_default();
-            Json(ApiResponse::success(value))
-        }
-        Err(e) => Json(ApiResponse::error(404, e.to_string())),
+        Ok(result) => match serde_json::to_value(&result) {
+            Ok(value) => Json(ApiResponse::success(value)),
+            Err(e) => Json(ApiResponse::error(
+                500,
+                format!("Serialization error: {}", e),
+            )),
+        },
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
     }
 }
 
@@ -252,7 +311,7 @@ pub async fn list_repo_skills(
         .await
     {
         Ok(dtos) => Json(ApiResponse::success(dtos)),
-        Err(e) => Json(ApiResponse::error(500, e.to_string())),
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
     }
 }
 
@@ -272,11 +331,14 @@ pub async fn get_repo_plugin_agent(
         .get_repo_plugin_component(&host, &org, &repo, &plugin_name, "agent", &agent_name)
         .await
     {
-        Ok(v) => {
-            let value = serde_json::to_value(&v).unwrap_or_default();
-            Json(ApiResponse::success(value))
-        }
-        Err(e) => Json(ApiResponse::error(404, e.to_string())),
+        Ok(v) => match serde_json::to_value(&v) {
+            Ok(value) => Json(ApiResponse::success(value)),
+            Err(e) => Json(ApiResponse::error(
+                500,
+                format!("Serialization error: {}", e),
+            )),
+        },
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
     }
 }
 
@@ -296,11 +358,14 @@ pub async fn get_repo_plugin_skill(
         .get_repo_plugin_component(&host, &org, &repo, &plugin_name, "skill", &skill_name)
         .await
     {
-        Ok(v) => {
-            let value = serde_json::to_value(&v).unwrap_or_default();
-            Json(ApiResponse::success(value))
-        }
-        Err(e) => Json(ApiResponse::error(404, e.to_string())),
+        Ok(v) => match serde_json::to_value(&v) {
+            Ok(value) => Json(ApiResponse::success(value)),
+            Err(e) => Json(ApiResponse::error(
+                500,
+                format!("Serialization error: {}", e),
+            )),
+        },
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
     }
 }
 
@@ -320,11 +385,14 @@ pub async fn get_repo_plugin_command(
         .get_repo_plugin_component(&host, &org, &repo, &plugin_name, "command", &command_name)
         .await
     {
-        Ok(v) => {
-            let value = serde_json::to_value(&v).unwrap_or_default();
-            Json(ApiResponse::success(value))
-        }
-        Err(e) => Json(ApiResponse::error(404, e.to_string())),
+        Ok(v) => match serde_json::to_value(&v) {
+            Ok(value) => Json(ApiResponse::success(value)),
+            Err(e) => Json(ApiResponse::error(
+                500,
+                format!("Serialization error: {}", e),
+            )),
+        },
+        Err(e) => Json(ApiResponse::error(e.code, e.message)),
     }
 }
 
@@ -439,13 +507,56 @@ pub async fn update_discovery_registry(
     }
 }
 
+pub async fn validate_delete_discovery_registry(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i32>,
+    user: crate::auth::AuthUser,
+) -> Json<ApiResponse<ValidateDeleteResponse>> {
+    if !is_admin(&user) {
+        return Json(ApiResponse::error(403, "admin access required".to_string()));
+    }
+
+    let config = match state
+        .services
+        .discovery_registry_service
+        .find_by_id(id)
+        .await
+    {
+        Ok(Some(cfg)) => cfg,
+        Ok(None) => return Json(ApiResponse::error(404, "registry not found".to_string())),
+        Err(e) => return Json(ApiResponse::error(500, e.to_string())),
+    };
+
+    let mut reasons =
+        vec!["Deleting this registry prevents future discovery runs from this source.".to_string()];
+    if config.next_run_at.is_some() {
+        reasons.push("A future discovery run is currently scheduled.".to_string());
+    }
+
+    Json(ApiResponse::success(ValidateDeleteResponse {
+        can_delete: true,
+        reasons,
+    }))
+}
+
 pub async fn delete_discovery_registry(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i32>,
     user: crate::auth::AuthUser,
+    payload: Option<Json<DeleteDiscoveryRegistryRequest>>,
 ) -> Json<ApiResponse<serde_json::Value>> {
     if !is_admin(&user) {
         return Json(ApiResponse::error(403, "admin access required".to_string()));
+    }
+
+    let confirmation_id = payload.and_then(|Json(req)| req.confirmation_id);
+    if let Some(conf) = confirmation_id {
+        if conf != id.to_string() {
+            return Json(ApiResponse::error(
+                400,
+                "Confirmation ID does not match registry ID".to_string(),
+            ));
+        }
     }
 
     match state
@@ -480,6 +591,7 @@ pub async fn test_discovery_registry_health(
         Err(e) => return Json(ApiResponse::error(500, e.to_string())),
     };
 
+    let started_at = Utc::now().naive_utc();
     let checked_at = Utc::now().naive_utc();
     let client = reqwest::Client::new();
     let health_url = format!("{}/rate_limit", config.api_url.trim_end_matches('/'));
@@ -515,6 +627,7 @@ pub async fn test_discovery_registry_health(
         ok,
         message,
         checked_at,
+        started_at: Some(started_at),
     }))
 }
 
@@ -542,6 +655,7 @@ pub async fn trigger_discovery_registry(
         return Json(ApiResponse::error(404, "registry not found".to_string()));
     }
 
+    let started_at = Utc::now().naive_utc();
     let workflow_id = format!("trigger-registry-{}-{}", id, uuid::Uuid::new_v4());
     let task_queue = state.settings.temporal.task_queue.clone();
 
@@ -591,7 +705,12 @@ pub async fn trigger_discovery_registry(
         ));
     }
 
-    Json(ApiResponse::success(TriggerWorkflowDto { workflow_id }))
+    Json(ApiResponse::success(TriggerWorkflowDto {
+        ok: true,
+        message: "Discovery workflow triggered".to_string(),
+        workflow_id,
+        started_at,
+    }))
 }
 
 #[cfg(test)]
