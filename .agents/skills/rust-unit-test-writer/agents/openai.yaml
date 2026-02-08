@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Unit Test Writer"
+  short_description: "Write robust Rust unit tests quickly"
+  default_prompt: "Use $rust-unit-test-writer to add reliable Rust unit tests for this module."
