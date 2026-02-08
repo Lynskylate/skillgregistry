@@ -730,7 +730,417 @@ pub async fn trigger_discovery_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_api_url;
+    use super::*;
+    use crate::auth::AuthUser;
+    use axum::extract::{Path, State};
+    use common::entities::{
+        plugin_components, plugin_versions, plugins, skill_registry, skill_versions, skills,
+    };
+    use migration::MigratorTrait;
+    use sea_orm::{ActiveModelTrait, Database, Set};
+
+    fn test_settings() -> common::settings::Settings {
+        common::settings::Settings {
+            port: 3000,
+            database: common::settings::DatabaseSettings {
+                url: "sqlite::memory:".to_string(),
+            },
+            s3: common::settings::S3Settings {
+                bucket: "test".to_string(),
+                region: "us-east-1".to_string(),
+                endpoint: None,
+                access_key_id: Some("test-access".to_string()),
+                secret_access_key: Some("test-secret".to_string()),
+                force_path_style: false,
+            },
+            github: common::settings::GithubSettings {
+                search_keywords: "topic:agent-skill".to_string(),
+                token: None,
+                api_url: "https://api.github.com".to_string(),
+            },
+            worker: common::settings::WorkerSettings {
+                scan_interval_seconds: 3600,
+            },
+            temporal: common::settings::TemporalSettings {
+                server_url: "http://localhost:7233".to_string(),
+                task_queue: "test".to_string(),
+            },
+            auth: common::settings::AuthSettings::default(),
+            debug: true,
+        }
+    }
+
+    async fn setup_state() -> Arc<AppState> {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        migration::Migrator::up(&db, None).await.unwrap();
+
+        let settings = test_settings();
+        let db_arc = Arc::new(db);
+        let (repos, services) = common::build_all(db_arc.clone(), &settings).await.unwrap();
+        Arc::new(AppState {
+            db: db_arc,
+            settings,
+            services,
+            repos,
+            allowed_frontend_origins: Arc::new(vec![]),
+        })
+    }
+
+    fn admin_user() -> AuthUser {
+        AuthUser {
+            user_id: uuid::Uuid::new_v4(),
+            role: "admin".to_string(),
+        }
+    }
+
+    fn regular_user() -> AuthUser {
+        AuthUser {
+            user_id: uuid::Uuid::new_v4(),
+            role: "user".to_string(),
+        }
+    }
+
+    async fn seed_skill_and_plugin_graph(state: &Arc<AppState>) {
+        let db = state.db.as_ref();
+        let now = Utc::now().naive_utc();
+
+        let registry = skill_registry::ActiveModel {
+            platform: Set(skill_registry::Platform::Github),
+            owner: Set("acme".to_string()),
+            name: Set("skills-repo".to_string()),
+            url: Set("https://github.com/acme/skills-repo".to_string()),
+            host: Set(Some("github.com".to_string())),
+            status: Set("active".to_string()),
+            stars: Set(42),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap();
+
+        let skill = skills::ActiveModel {
+            skill_registry_id: Set(registry.id),
+            name: Set("demo-skill".to_string()),
+            latest_version: Set(Some("1.0.0".to_string())),
+            install_count: Set(0),
+            is_active: Set(1),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap();
+
+        skill_versions::ActiveModel {
+            skill_id: Set(skill.id),
+            version: Set("1.0.0".to_string()),
+            description: Set(Some("Demo skill".to_string())),
+            readme_content: Set(Some("# Demo".to_string())),
+            s3_key: Set(Some("skills/demo-skill/1.0.0.zip".to_string())),
+            oss_url: Set(Some(
+                "https://oss.local/skills/demo-skill/1.0.0.zip".to_string(),
+            )),
+            file_hash: Set(Some("abc123".to_string())),
+            metadata: Set(Some(serde_json::json!({
+                "compatibility": ["claude", "codex"],
+                "allowed-tools": ["bash", "rg"],
+                "license": "MIT"
+            }))),
+            created_at: Set(now),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap();
+
+        let plugin = plugins::ActiveModel {
+            skill_registry_id: Set(registry.id),
+            name: Set("demo-plugin".to_string()),
+            description: Set(Some("Demo plugin".to_string())),
+            source: Set(Some(serde_json::json!({"source": "plugins/demo"}))),
+            strict: Set(1),
+            latest_version: Set(Some("0.1.0".to_string())),
+            is_active: Set(1),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap();
+
+        let plugin_version = plugin_versions::ActiveModel {
+            plugin_id: Set(plugin.id),
+            version: Set("0.1.0".to_string()),
+            description: Set(Some("Demo plugin version".to_string())),
+            readme_content: Set(Some("# Plugin".to_string())),
+            s3_key: Set(Some("plugins/demo-plugin/0.1.0.zip".to_string())),
+            oss_url: Set(Some(
+                "https://oss.local/plugins/demo-plugin/0.1.0.zip".to_string(),
+            )),
+            file_hash: Set(Some("def456".to_string())),
+            metadata: Set(Some(serde_json::json!({"strict": true}))),
+            created_at: Set(now),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap();
+
+        for (kind, name, description, path) in [
+            ("agent", "reviewer", "Agent component", "agents/reviewer.md"),
+            (
+                "skill",
+                "plug-skill",
+                "Skill component",
+                "skills/plug-skill/SKILL.md",
+            ),
+            ("command", "run", "Command component", "commands/run.md"),
+        ] {
+            plugin_components::ActiveModel {
+                plugin_version_id: Set(plugin_version.id),
+                kind: Set(kind.to_string()),
+                path: Set(path.to_string()),
+                name: Set(name.to_string()),
+                description: Set(Some(description.to_string())),
+                markdown_content: Set(Some("# Component".to_string())),
+                metadata: Set(Some(serde_json::json!({"kind": kind}))),
+                created_at: Set(now),
+                ..Default::default()
+            }
+            .insert(db)
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_and_plugin_handlers_cover_success_and_error_paths() {
+        let state = setup_state().await;
+        seed_skill_and_plugin_graph(&state).await;
+
+        let listed = list_skills(
+            State(state.clone()),
+            Query(SearchParams {
+                q: Some("demo".to_string()),
+                page: Some(1),
+                per_page: Some(20),
+                owner: Some("acme".to_string()),
+                repo: Some("skills-repo".to_string()),
+                host: Some("github.com".to_string()),
+                org: None,
+                sort_by: Some("name".to_string()),
+                order: Some("asc".to_string()),
+                compatibility: Some("claude".to_string()),
+                has_version: Some(true),
+            }),
+        )
+        .await;
+        assert_eq!(listed.0.code, 200);
+        let listed_data = listed.0.data.unwrap();
+        assert_eq!(listed_data.total, 1);
+        assert_eq!(listed_data.items[0].name, "demo-skill");
+
+        let missing_list = list_skills(
+            State(state.clone()),
+            Query(SearchParams {
+                q: None,
+                page: Some(1),
+                per_page: Some(10),
+                owner: Some("acme".to_string()),
+                repo: Some("missing".to_string()),
+                host: Some("github.com".to_string()),
+                org: None,
+                sort_by: None,
+                order: None,
+                compatibility: None,
+                has_version: None,
+            }),
+        )
+        .await;
+        assert_eq!(missing_list.0.code, 200);
+        assert_eq!(missing_list.0.data.unwrap().total, 0);
+
+        let skill_detail = get_repo_skill_detail(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "demo-skill".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(skill_detail.0.code, 200);
+        assert_eq!(skill_detail.0.data.unwrap().skill["name"], "demo-skill");
+
+        let missing_skill_detail = get_repo_skill_detail(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "missing-skill".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(missing_skill_detail.0.code, 404);
+
+        let version_detail = get_repo_skill_version(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "demo-skill".to_string(),
+                "1.0.0".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(version_detail.0.code, 200);
+
+        let missing_version = get_repo_skill_version(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "demo-skill".to_string(),
+                "9.9.9".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(missing_version.0.code, 404);
+
+        let download = download_repo_skill(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "demo-skill".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(download.0.code, 200);
+        assert!(download
+            .0
+            .data
+            .unwrap()
+            .download_url
+            .contains("skills/demo-skill/1.0.0.zip"));
+
+        let plugin_list = list_repo_plugins(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(plugin_list.0.code, 200);
+        assert_eq!(plugin_list.0.data.unwrap().len(), 1);
+
+        let plugin_detail = get_repo_plugin(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "demo-plugin".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(plugin_detail.0.code, 200);
+
+        let missing_plugin = get_repo_plugin(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "missing-plugin".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(missing_plugin.0.code, 404);
+
+        let repo_skills = list_repo_skills(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(repo_skills.0.code, 200);
+        let skill_names: Vec<String> = repo_skills
+            .0
+            .data
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert!(skill_names.contains(&"demo-skill".to_string()));
+        assert!(skill_names.contains(&"plug-skill".to_string()));
+
+        let agent = get_repo_plugin_agent(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "demo-plugin".to_string(),
+                "reviewer".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(agent.0.code, 200);
+
+        let skill_component = get_repo_plugin_skill(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "demo-plugin".to_string(),
+                "plug-skill".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(skill_component.0.code, 200);
+
+        let command = get_repo_plugin_command(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "demo-plugin".to_string(),
+                "run".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(command.0.code, 200);
+
+        let missing_component = get_repo_plugin_command(
+            State(state.clone()),
+            Path((
+                "github.com".to_string(),
+                "acme".to_string(),
+                "skills-repo".to_string(),
+                "demo-plugin".to_string(),
+                "missing".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(missing_component.0.code, 404);
+    }
 
     #[test]
     fn normalize_api_url_defaults_to_public_github() {
@@ -746,9 +1156,252 @@ mod tests {
     }
 
     #[test]
-    fn normalize_api_url_rejects_query_string() {
-        let err = normalize_api_url(Some("https://api.github.com/?a=1"))
-            .expect_err("query parameters are not allowed");
+    fn normalize_api_url_rejects_invalid_inputs() {
+        let err = normalize_api_url(Some("https://api.github.com/?a=1")).unwrap_err();
         assert!(err.contains("query"));
+
+        let err = normalize_api_url(Some("ftp://example.com")).unwrap_err();
+        assert!(err.contains("http or https"));
+
+        let err = normalize_api_url(Some("https://user:pw@example.com")).unwrap_err();
+        assert!(err.contains("credentials"));
+
+        let err = normalize_api_url(Some("https://")).unwrap_err();
+        assert!(err.contains("invalid url") || err.contains("host"));
+    }
+
+    #[test]
+    fn normalize_queries_and_provider_mapping() {
+        let queries = normalize_queries(vec![
+            "  topic:agent-skill  ".to_string(),
+            "".to_string(),
+            " repo:acme/skills ".to_string(),
+        ]);
+        assert_eq!(queries, vec!["topic:agent-skill", "repo:acme/skills"]);
+
+        assert_eq!(
+            map_provider(&discovery_registries::Platform::Github),
+            "github"
+        );
+    }
+
+    #[test]
+    fn create_json_payload_serializes_value() {
+        let payload = create_json_payload(&serde_json::json!({"id": 1})).unwrap();
+        assert_eq!(
+            payload.metadata.get("encoding").map(|v| v.as_slice()),
+            Some("json/plain".as_bytes())
+        );
+        let json: serde_json::Value = serde_json::from_slice(&payload.data).unwrap();
+        assert_eq!(json["id"], 1);
+    }
+
+    #[tokio::test]
+    async fn discovery_registry_handlers_enforce_admin() {
+        let state = setup_state().await;
+
+        let resp = list_discovery_registries(State(state.clone()), regular_user()).await;
+        assert_eq!(resp.0.code, 403);
+
+        let resp = create_discovery_registry(
+            State(state.clone()),
+            regular_user(),
+            Json(CreateDiscoveryRegistryRequest {
+                provider: "github".to_string(),
+                token: "token".to_string(),
+                url: None,
+                queries: vec!["q".to_string()],
+                schedule_interval_seconds: 60,
+            }),
+        )
+        .await;
+        assert_eq!(resp.0.code, 403);
+    }
+
+    #[tokio::test]
+    async fn create_update_validate_delete_registry_happy_path() {
+        let state = setup_state().await;
+
+        let created = create_discovery_registry(
+            State(state.clone()),
+            admin_user(),
+            Json(CreateDiscoveryRegistryRequest {
+                provider: "github".to_string(),
+                token: "token-value".to_string(),
+                url: Some("https://api.github.com".to_string()),
+                queries: vec!["topic:agent-skill".to_string()],
+                schedule_interval_seconds: 120,
+            }),
+        )
+        .await;
+        assert_eq!(created.0.code, 200);
+        let dto = created.0.data.unwrap();
+        assert_eq!(dto.provider, "github");
+        assert_eq!(dto.queries, vec!["topic:agent-skill"]);
+
+        let listed = list_discovery_registries(State(state.clone()), admin_user()).await;
+        assert_eq!(listed.0.code, 200);
+        assert_eq!(listed.0.data.unwrap().len(), 1);
+
+        let updated = update_discovery_registry(
+            State(state.clone()),
+            Path(dto.id),
+            admin_user(),
+            Json(UpdateDiscoveryRegistryRequest {
+                queries: vec!["repo:acme/skills".to_string(), "  ".to_string()],
+                schedule_interval_seconds: 180,
+                url: "https://ghe.example.com/api/v3/".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(updated.0.code, 200);
+        let updated_dto = updated.0.data.unwrap();
+        assert_eq!(updated_dto.queries, vec!["repo:acme/skills"]);
+        assert_eq!(updated_dto.url, "https://ghe.example.com/api/v3");
+
+        let validated =
+            validate_delete_discovery_registry(State(state.clone()), Path(dto.id), admin_user())
+                .await;
+        assert_eq!(validated.0.code, 200);
+        let validate = validated.0.data.unwrap();
+        assert!(validate.can_delete);
+        assert!(!validate.reasons.is_empty());
+
+        let missing_confirmation =
+            delete_discovery_registry(State(state.clone()), Path(dto.id), admin_user(), None).await;
+        assert_eq!(missing_confirmation.0.code, 400);
+
+        let deleted = delete_discovery_registry(
+            State(state.clone()),
+            Path(dto.id),
+            admin_user(),
+            Some(Json(DeleteDiscoveryRegistryRequest {
+                confirmation_id: dto.id.to_string(),
+            })),
+        )
+        .await;
+        assert_eq!(deleted.0.code, 200);
+    }
+
+    #[tokio::test]
+    async fn create_registry_validation_errors() {
+        let state = setup_state().await;
+
+        let resp = create_discovery_registry(
+            State(state.clone()),
+            admin_user(),
+            Json(CreateDiscoveryRegistryRequest {
+                provider: "gitlab".to_string(),
+                token: "token".to_string(),
+                url: None,
+                queries: vec!["q".to_string()],
+                schedule_interval_seconds: 60,
+            }),
+        )
+        .await;
+        assert_eq!(resp.0.code, 400);
+
+        let resp = create_discovery_registry(
+            State(state.clone()),
+            admin_user(),
+            Json(CreateDiscoveryRegistryRequest {
+                provider: "github".to_string(),
+                token: "   ".to_string(),
+                url: None,
+                queries: vec!["q".to_string()],
+                schedule_interval_seconds: 60,
+            }),
+        )
+        .await;
+        assert_eq!(resp.0.code, 400);
+
+        let resp = create_discovery_registry(
+            State(state.clone()),
+            admin_user(),
+            Json(CreateDiscoveryRegistryRequest {
+                provider: "github".to_string(),
+                token: "token".to_string(),
+                url: None,
+                queries: vec![" ".to_string()],
+                schedule_interval_seconds: 60,
+            }),
+        )
+        .await;
+        assert_eq!(resp.0.code, 400);
+
+        let resp = create_discovery_registry(
+            State(state.clone()),
+            admin_user(),
+            Json(CreateDiscoveryRegistryRequest {
+                provider: "github".to_string(),
+                token: "token".to_string(),
+                url: None,
+                queries: vec!["q".to_string()],
+                schedule_interval_seconds: 30,
+            }),
+        )
+        .await;
+        assert_eq!(resp.0.code, 400);
+
+        let resp = create_discovery_registry(
+            State(state),
+            admin_user(),
+            Json(CreateDiscoveryRegistryRequest {
+                provider: "github".to_string(),
+                token: "token".to_string(),
+                url: Some("ftp://example.com".to_string()),
+                queries: vec!["q".to_string()],
+                schedule_interval_seconds: 60,
+            }),
+        )
+        .await;
+        assert_eq!(resp.0.code, 400);
+    }
+
+    #[tokio::test]
+    async fn health_and_trigger_cover_error_paths() {
+        let state = setup_state().await;
+
+        let created = create_discovery_registry(
+            State(state.clone()),
+            admin_user(),
+            Json(CreateDiscoveryRegistryRequest {
+                provider: "github".to_string(),
+                token: "token".to_string(),
+                url: Some("http://127.0.0.1:1".to_string()),
+                queries: vec!["q".to_string()],
+                schedule_interval_seconds: 60,
+            }),
+        )
+        .await;
+        let id = created.0.data.unwrap().id;
+
+        let health =
+            test_discovery_registry_health(State(state.clone()), Path(id), admin_user()).await;
+        assert_eq!(health.0.code, 200);
+        let health_data = health.0.data.unwrap();
+        assert!(!health_data.ok);
+        assert!(
+            health_data.message.contains("GitHub API request failed")
+                || health_data.message.contains("status")
+        );
+
+        let mut bad_temporal_settings = state.settings.clone();
+        bad_temporal_settings.temporal.server_url = "not-a-url".to_string();
+        let bad_temporal_state = Arc::new(AppState {
+            db: state.db.clone(),
+            settings: bad_temporal_settings,
+            services: state.services.clone(),
+            repos: state.repos.clone(),
+            allowed_frontend_origins: state.allowed_frontend_origins.clone(),
+        });
+
+        let triggered =
+            trigger_discovery_registry(State(bad_temporal_state), Path(id), admin_user()).await;
+        assert_eq!(triggered.0.code, 500);
+        assert!(triggered.0.message.contains("invalid temporal server url"));
+
+        let missing = trigger_discovery_registry(State(state), Path(9999), admin_user()).await;
+        assert_eq!(missing.0.code, 404);
     }
 }

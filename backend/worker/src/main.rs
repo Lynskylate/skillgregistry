@@ -16,11 +16,19 @@ use bootstrap::{
 use common::settings::Settings;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+fn default_rust_log() -> String {
+    "worker=debug,common=debug".into()
+}
+
+fn display_s3_endpoint(endpoint: Option<&str>) -> String {
+    endpoint.unwrap_or("<aws-default>").to_string()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "worker=debug,common=debug".into()),
+            std::env::var("RUST_LOG").unwrap_or_else(|_| default_rust_log()),
         ))
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -33,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         s3_bucket = %s3_bucket,
         s3_region = %s3_region,
-        s3_endpoint = %s3_endpoint.clone().unwrap_or_else(|| "<aws-default>".to_string()),
+        s3_endpoint = %display_s3_endpoint(s3_endpoint.as_deref()),
         "S3 config loaded"
     );
 
@@ -54,4 +62,19 @@ async fn main() -> anyhow::Result<()> {
     temporal_runtime.worker.run().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn helper_defaults_are_stable() {
+        assert_eq!(default_rust_log(), "worker=debug,common=debug");
+        assert_eq!(display_s3_endpoint(None), "<aws-default>");
+        assert_eq!(
+            display_s3_endpoint(Some("http://localhost:9000")),
+            "http://localhost:9000"
+        );
+    }
 }

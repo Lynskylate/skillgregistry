@@ -58,12 +58,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn should_skip_temporal_setup() -> bool {
-    let value = std::env::var("SKILLREGISTRY_SETUP_SKIP_TEMPORAL").unwrap_or_default();
+fn is_truthy(value: &str) -> bool {
     matches!(
-        value.to_ascii_lowercase().as_str(),
+        value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+fn should_skip_temporal_setup() -> bool {
+    let value = std::env::var("SKILLREGISTRY_SETUP_SKIP_TEMPORAL").unwrap_or_default();
+    is_truthy(&value)
 }
 
 async fn seed_admin(db: &DatabaseConnection, settings: &Settings) -> anyhow::Result<()> {
@@ -404,4 +408,197 @@ async fn setup_temporal(settings: &Settings) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::entities::{
+        discovery_registries,
+        prelude::{DiscoveryRegistries, LocalCredentials, Users},
+    };
+    use sea_orm::{Database, EntityTrait};
+
+    fn test_settings() -> Settings {
+        Settings {
+            port: 3000,
+            database: common::settings::DatabaseSettings {
+                url: "sqlite::memory:".to_string(),
+            },
+            s3: common::settings::S3Settings {
+                bucket: "test".to_string(),
+                region: "us-east-1".to_string(),
+                endpoint: None,
+                access_key_id: None,
+                secret_access_key: None,
+                force_path_style: false,
+            },
+            github: common::settings::GithubSettings {
+                search_keywords: "topic:agent-skill".to_string(),
+                token: Some("ghp_token".to_string()),
+                api_url: "https://api.github.com".to_string(),
+            },
+            worker: common::settings::WorkerSettings {
+                scan_interval_seconds: 3600,
+            },
+            temporal: common::settings::TemporalSettings {
+                server_url: "http://localhost:7233".to_string(),
+                task_queue: "queue".to_string(),
+            },
+            auth: common::settings::AuthSettings::default(),
+            debug: true,
+        }
+    }
+
+    async fn setup_db() -> DatabaseConnection {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        db
+    }
+
+    #[test]
+    fn is_truthy_accepts_expected_variants() {
+        for value in ["1", "true", "TRUE", "yes", "on", "  on  "] {
+            assert!(is_truthy(value), "{value} should be truthy");
+        }
+        for value in ["", "0", "false", "off", "nope"] {
+            assert!(!is_truthy(value), "{value} should be falsey");
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_db_accepts_sqlite_memory() {
+        let db = wait_for_db("sqlite::memory:").await.unwrap();
+        db.ping().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn seed_admin_creates_default_admin_once() {
+        let db = setup_db().await;
+        let settings = test_settings();
+
+        seed_admin(&db, &settings).await.unwrap();
+        seed_admin(&db, &settings).await.unwrap();
+
+        let admins = Users::find().all(&db).await.unwrap();
+        assert_eq!(admins.len(), 1);
+        assert_eq!(admins[0].role, common::entities::users::UserRole::Admin);
+
+        let creds = LocalCredentials::find().all(&db).await.unwrap();
+        assert_eq!(creds.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn seed_admin_requires_password_in_production_mode() {
+        let db = setup_db().await;
+        let mut settings = test_settings();
+        settings.debug = false;
+        settings.auth.admin_bootstrap.password = None;
+
+        let err = seed_admin(&db, &settings).await.unwrap_err().to_string();
+        assert!(err.contains("password is required"));
+    }
+
+    #[tokio::test]
+    async fn seed_default_discovery_registry_inserts_when_token_and_queries_present() {
+        let db = setup_db().await;
+        let settings = test_settings();
+
+        seed_default_discovery_registry(&db, &settings)
+            .await
+            .unwrap();
+        seed_default_discovery_registry(&db, &settings)
+            .await
+            .unwrap();
+
+        let registries = DiscoveryRegistries::find().all(&db).await.unwrap();
+        assert_eq!(registries.len(), 1);
+        assert_eq!(
+            registries[0].platform,
+            discovery_registries::Platform::Github
+        );
+        assert_eq!(registries[0].schedule_interval_seconds, 3600);
+    }
+
+    #[tokio::test]
+    async fn seed_default_discovery_registry_skips_without_token_or_queries() {
+        let db = setup_db().await;
+        let mut settings = test_settings();
+        settings.github.token = None;
+        seed_default_discovery_registry(&db, &settings)
+            .await
+            .unwrap();
+
+        let count = DiscoveryRegistries::find().count(&db).await.unwrap();
+        assert_eq!(count, 0);
+
+        settings.github.token = Some("ghp_token".to_string());
+        settings.github.search_keywords = " ,  ".to_string();
+        seed_default_discovery_registry(&db, &settings)
+            .await
+            .unwrap();
+
+        let count = DiscoveryRegistries::find().count(&db).await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn seed_default_discovery_registry_normalizes_api_url() {
+        let db = setup_db().await;
+        let mut settings = test_settings();
+        settings.github.api_url = "https://ghe.example.com/api/v3/".to_string();
+
+        seed_default_discovery_registry(&db, &settings)
+            .await
+            .unwrap();
+
+        let registry = DiscoveryRegistries::find().one(&db).await.unwrap().unwrap();
+        assert_eq!(registry.api_url, "https://ghe.example.com/api/v3");
+    }
+    #[test]
+    fn should_skip_temporal_setup_reads_env_flag() {
+        std::env::remove_var("SKILLREGISTRY_SETUP_SKIP_TEMPORAL");
+        assert!(!should_skip_temporal_setup());
+
+        std::env::set_var("SKILLREGISTRY_SETUP_SKIP_TEMPORAL", "true");
+        assert!(should_skip_temporal_setup());
+
+        std::env::set_var("SKILLREGISTRY_SETUP_SKIP_TEMPORAL", "0");
+        assert!(!should_skip_temporal_setup());
+
+        std::env::remove_var("SKILLREGISTRY_SETUP_SKIP_TEMPORAL");
+    }
+
+    #[tokio::test]
+    async fn setup_temporal_rejects_invalid_server_url() {
+        let mut settings = test_settings();
+        settings.temporal.server_url = "not-a-url".to_string();
+
+        let err = setup_temporal(&settings).await.unwrap_err().to_string();
+        assert!(err.contains("relative URL") || err.contains("invalid"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_s3_unreachable_endpoint_times_out_after_retries() {
+        let mut settings = test_settings();
+        settings.s3.endpoint = Some("http://127.0.0.1:1".to_string());
+
+        let task = tokio::spawn(async move { setup_s3(&settings).await });
+        tokio::time::advance(Duration::from_secs(70)).await;
+
+        let err = task.await.unwrap().unwrap_err().to_string();
+        assert!(err.contains("Failed to connect to S3 after 30 attempts"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_temporal_unreachable_endpoint_times_out_after_retries() {
+        let mut settings = test_settings();
+        settings.temporal.server_url = "http://127.0.0.1:1".to_string();
+
+        let task = tokio::spawn(async move { setup_temporal(&settings).await });
+        tokio::time::advance(Duration::from_secs(70)).await;
+
+        let err = task.await.unwrap().unwrap_err().to_string();
+        assert!(err.contains("Failed to connect to Temporal after 30 attempts"));
+    }
 }

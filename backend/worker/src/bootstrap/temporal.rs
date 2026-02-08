@@ -59,3 +59,24 @@ pub async fn build_temporal_worker(settings: &Settings) -> Result<TemporalWorker
         _runtime: runtime,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_host_name_returns_non_empty_value() {
+        let host = get_host_name();
+        assert!(!host.trim().is_empty());
+    }
+
+    #[test]
+    fn get_worker_identity_contains_pid_host_and_task_queue() {
+        let identity = get_worker_identity("queue-a");
+        let parts: Vec<&str> = identity.split('@').collect();
+        assert_eq!(parts.len(), 3);
+        assert!(parts[0].parse::<u32>().is_ok());
+        assert!(!parts[1].is_empty());
+        assert_eq!(parts[2], "queue-a");
+    }
+}

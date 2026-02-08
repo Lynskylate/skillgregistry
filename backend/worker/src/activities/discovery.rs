@@ -254,10 +254,11 @@ mod tests {
     use super::*;
     use crate::github::{GithubOwner, GithubRepo};
     use crate::ports::MockGithubApi;
-    use common::entities::skill_registry;
-    use sea_orm::DatabaseBackend;
-    use sea_orm::MockDatabase;
-    use sea_orm::MockExecResult;
+    use common::entities::{blacklist, skill_registry};
+    use sea_orm::{
+        ActiveModelTrait, ColumnTrait, Database, DatabaseBackend, EntityTrait, MockDatabase,
+        MockExecResult, QueryFilter, Set,
+    };
 
     #[tokio::test]
     async fn test_discovery_new_repo() -> Result<()> {
@@ -314,6 +315,160 @@ mod tests {
             .map_err(|e| anyhow::anyhow!("{:?}", e))?;
         assert_eq!(res.new_count, 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn extract_repo_host_handles_invalid_and_mixed_case_urls() {
+        assert_eq!(
+            extract_repo_host("https://GitHub.com/acme/repo"),
+            Some("github.com".to_string())
+        );
+        assert_eq!(
+            extract_repo_host("http://example.com/repo"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(extract_repo_host("not-a-url"), None);
+    }
+
+    #[tokio::test]
+    async fn discover_repos_updates_existing_and_deduplicates_results() -> Result<()> {
+        use migration::MigratorTrait;
+
+        let db = Database::connect("sqlite::memory:").await?;
+        migration::Migrator::up(&db, None).await?;
+
+        let now = chrono::Utc::now().naive_utc();
+        let existing = skill_registry::ActiveModel {
+            platform: Set(skill_registry::Platform::Github),
+            owner: Set("acme".to_string()),
+            name: Set("existing".to_string()),
+            url: Set("https://github.com/acme/existing".to_string()),
+            host: Set(Some("github.com".to_string())),
+            status: Set("active".to_string()),
+            stars: Set(1),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        }
+        .insert(&db)
+        .await?;
+
+        blacklist::ActiveModel {
+            repository_url: Set("https://github.com/acme/blacklisted".to_string()),
+            reason: Set("blocked".to_string()),
+            created_at: Set(now),
+            ..Default::default()
+        }
+        .insert(&db)
+        .await?;
+
+        let updated_repo = GithubRepo {
+            name: "existing".to_string(),
+            owner: GithubOwner {
+                login: "acme".to_string(),
+            },
+            html_url: "https://github.com/acme/existing".to_string(),
+            description: Some("updated".to_string()),
+            stargazers_count: 99,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let new_repo = GithubRepo {
+            name: "new-skill".to_string(),
+            owner: GithubOwner {
+                login: "acme".to_string(),
+            },
+            html_url: "https://github.com/acme/new-skill".to_string(),
+            description: Some("new".to_string()),
+            stargazers_count: 12,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let blacklisted_repo = GithubRepo {
+            name: "blacklisted".to_string(),
+            owner: GithubOwner {
+                login: "acme".to_string(),
+            },
+            html_url: "https://github.com/acme/blacklisted".to_string(),
+            description: Some("blocked".to_string()),
+            stargazers_count: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let mut github = MockGithubApi::new();
+        let updated_repo_clone = updated_repo.clone();
+        let new_repo_clone = new_repo.clone();
+        github
+            .expect_search_repositories()
+            .times(1)
+            .returning(move |query| {
+                assert_eq!(query, "topic:agent-skill fork:false sort:updated");
+                Ok(vec![updated_repo_clone.clone(), new_repo_clone.clone()])
+            });
+
+        let new_repo_clone = new_repo.clone();
+        github
+            .expect_search_code()
+            .times(1)
+            .returning(move |query| {
+                assert_eq!(query, "path:SKILL.md");
+                Ok(vec![new_repo_clone.clone(), blacklisted_repo.clone()])
+            });
+
+        let discovery = DiscoveryActivities::new(Arc::new(db.clone()), Arc::new(github));
+        let result = discovery
+            .discover_repos(vec![
+                "topic:agent-skill".to_string(),
+                "path:SKILL.md".to_string(),
+            ])
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        assert_eq!(result.new_count, 1);
+        assert_eq!(result.updated_count, 1);
+        assert_eq!(result.touched_repo_ids.len(), 2);
+        assert!(result.touched_repo_ids.contains(&existing.id));
+
+        let repos = SkillRegistry::find()
+            .filter(skill_registry::Column::Owner.eq("acme"))
+            .all(&db)
+            .await?;
+        assert_eq!(repos.len(), 2);
+
+        let refreshed_existing = SkillRegistry::find_by_id(existing.id)
+            .one(&db)
+            .await?
+            .unwrap();
+        assert_eq!(refreshed_existing.stars, 99);
+        assert!(refreshed_existing.last_scanned_at.is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn discover_repos_swallows_search_errors_and_returns_empty_counts() -> Result<()> {
+        use migration::MigratorTrait;
+
+        let db = Database::connect("sqlite::memory:").await?;
+        migration::Migrator::up(&db, None).await?;
+
+        let mut github = MockGithubApi::new();
+        github
+            .expect_search_repositories()
+            .times(1)
+            .returning(|_| Err(anyhow::anyhow!("boom")));
+
+        let discovery = DiscoveryActivities::new(Arc::new(db), Arc::new(github));
+        let result = discovery
+            .discover_repos(vec!["topic:agent-skill".to_string()])
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        assert_eq!(result.new_count, 0);
+        assert_eq!(result.updated_count, 0);
+        assert!(result.touched_repo_ids.is_empty());
         Ok(())
     }
 }

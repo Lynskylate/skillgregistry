@@ -516,3 +516,170 @@ impl SkillService for SkillServiceImpl {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entities::{skill_registry, skill_versions, skills};
+    use crate::repositories::skills::SkillWithRegistry;
+
+    fn sample_skill_with_registry(
+        host: Option<&str>,
+        latest_version: Option<&str>,
+    ) -> SkillWithRegistry {
+        let now = chrono::Utc::now().naive_utc();
+        SkillWithRegistry {
+            skill: skills::Model {
+                id: 1,
+                name: "assistant-skill".to_string(),
+                skill_registry_id: 7,
+                latest_version: latest_version.map(ToString::to_string),
+                install_count: 3,
+                is_active: 1,
+                created_at: now,
+                updated_at: now,
+            },
+            registry: skill_registry::Model {
+                id: 7,
+                discovery_registry_id: None,
+                platform: skill_registry::Platform::Github,
+                owner: "acme".to_string(),
+                name: "skills".to_string(),
+                url: "https://github.example.com/acme/skills".to_string(),
+                host: host.map(ToString::to_string),
+                description: None,
+                repo_type: Some("skill".to_string()),
+                status: "active".to_string(),
+                blacklist_reason: None,
+                blacklisted_at: None,
+                stars: 42,
+                last_scanned_at: None,
+                created_at: now,
+                updated_at: now,
+            },
+        }
+    }
+
+    fn sample_version(metadata: Option<serde_json::Value>) -> skill_versions::Model {
+        skill_versions::Model {
+            id: 2,
+            skill_id: 1,
+            version: "1.2.3".to_string(),
+            description: Some("sample description".to_string()),
+            readme_content: Some("# Readme".to_string()),
+            s3_key: Some("skills/assistant-skill.zip".to_string()),
+            oss_url: None,
+            file_hash: Some("abc123".to_string()),
+            metadata,
+            created_at: chrono::Utc::now().naive_utc(),
+        }
+    }
+
+    #[test]
+    fn extract_host_handles_various_urls() {
+        assert_eq!(
+            SkillServiceImpl::extract_host("https://github.com/org/repo"),
+            "github.com"
+        );
+        assert_eq!(
+            SkillServiceImpl::extract_host("http://ghe.example.com/org/repo"),
+            "ghe.example.com"
+        );
+        assert_eq!(
+            SkillServiceImpl::extract_host("gitea.example.com/org/repo"),
+            "gitea.example.com"
+        );
+    }
+
+    #[test]
+    fn metadata_helpers_support_arrays_strings_and_aliases() {
+        let metadata = serde_json::json!({
+            "license": "MIT",
+            "compatibility": ["claude", "cursor"],
+            "allowed-tools": ["bash", "git"],
+            "url": "https://example.com",
+            "docs": "https://example.com/docs"
+        });
+
+        assert_eq!(
+            SkillServiceImpl::metadata_string(Some(&metadata), "license", None),
+            Some("MIT".to_string())
+        );
+        assert_eq!(
+            SkillServiceImpl::metadata_string_array(Some(&metadata), "compatibility", None),
+            Some(vec!["claude".to_string(), "cursor".to_string()])
+        );
+        assert_eq!(
+            SkillServiceImpl::metadata_string_array(
+                Some(&metadata),
+                "allowed-tools",
+                Some("allowed_tools")
+            ),
+            Some(vec!["bash".to_string(), "git".to_string()])
+        );
+        assert_eq!(
+            SkillServiceImpl::metadata_string(Some(&metadata), "homepage", Some("url")),
+            Some("https://example.com".to_string())
+        );
+
+        let csv_meta = serde_json::json!({"compatibility": "claude, cursor, "});
+        assert_eq!(
+            SkillServiceImpl::metadata_string_array(Some(&csv_meta), "compatibility", None),
+            Some(vec!["claude".to_string(), "cursor".to_string()])
+        );
+
+        let empty_meta = serde_json::json!({"compatibility": []});
+        assert_eq!(
+            SkillServiceImpl::metadata_string_array(Some(&empty_meta), "compatibility", None),
+            None
+        );
+    }
+
+    #[test]
+    fn compatibility_matching_is_case_insensitive() {
+        let version = sample_version(Some(serde_json::json!({
+            "compatibility": ["Claude", "Cursor"]
+        })));
+
+        assert!(SkillServiceImpl::matches_compatibility(
+            Some(&version),
+            "claude"
+        ));
+        assert!(SkillServiceImpl::matches_compatibility(
+            Some(&version),
+            "CURSOR"
+        ));
+        assert!(!SkillServiceImpl::matches_compatibility(
+            Some(&version),
+            "copilot"
+        ));
+        assert!(SkillServiceImpl::matches_compatibility(
+            Some(&version),
+            "   "
+        ));
+        assert!(!SkillServiceImpl::matches_compatibility(None, "claude"));
+    }
+
+    #[test]
+    fn to_skill_dto_prefers_registry_host_and_description() {
+        let item = sample_skill_with_registry(Some("git.example.com"), Some("1.2.3"));
+        let latest = sample_version(Some(serde_json::json!({"license": "MIT"})));
+
+        let dto = SkillServiceImpl::to_skill_dto(item, Some(&latest));
+        assert_eq!(dto.host, "git.example.com");
+        assert_eq!(dto.latest_version.as_deref(), Some("1.2.3"));
+        assert_eq!(dto.description.as_deref(), Some("sample description"));
+        assert_eq!(dto.owner, "acme");
+        assert_eq!(dto.repo, "skills");
+    }
+
+    #[test]
+    fn to_skill_dto_falls_back_to_url_host() {
+        let item = sample_skill_with_registry(None, None);
+        let dto = SkillServiceImpl::to_skill_dto(item, None);
+
+        assert_eq!(dto.host, "github.example.com");
+        assert_eq!(dto.description, None);
+        assert_eq!(dto.latest_version, None);
+    }
+}
