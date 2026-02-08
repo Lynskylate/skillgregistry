@@ -99,4 +99,99 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn normalize_dir_prefix_trims_and_adds_slash() {
+        assert_eq!(normalize_dir_prefix("foo"), "foo/");
+        assert_eq!(normalize_dir_prefix("foo/"), "foo/");
+        assert_eq!(normalize_dir_prefix("./foo"), "foo/");
+        assert_eq!(normalize_dir_prefix("/foo"), "foo/");
+        assert_eq!(normalize_dir_prefix("./foo/"), "foo/");
+        assert_eq!(normalize_dir_prefix("/foo/"), "foo/");
+    }
+
+    #[test]
+    fn normalize_dir_prefix_empty_returns_empty() {
+        assert_eq!(normalize_dir_prefix(""), "");
+        assert_eq!(normalize_dir_prefix("./"), "");
+        assert_eq!(normalize_dir_prefix("/"), "");
+        assert_eq!(normalize_dir_prefix("  "), "");
+        assert_eq!(normalize_dir_prefix(" ./ "), "");
+    }
+
+    #[test]
+    fn normalize_dir_prefix_whitespace_only_returns_empty() {
+        assert_eq!(normalize_dir_prefix("   "), "");
+        assert_eq!(normalize_dir_prefix("\t"), "");
+        assert_eq!(normalize_dir_prefix(" \n\t "), "");
+    }
+
+    #[test]
+    fn normalize_dir_prefix_nested_paths() {
+        assert_eq!(normalize_dir_prefix("foo/bar"), "foo/bar/");
+        assert_eq!(normalize_dir_prefix("foo/bar/"), "foo/bar/");
+        assert_eq!(normalize_dir_prefix("./foo/bar"), "foo/bar/");
+        assert_eq!(normalize_dir_prefix("foo//bar"), "foo//bar/");
+    }
+
+    #[test]
+    fn subtree_file_map_empty_prefix_returns_all() {
+        let mut files = BTreeMap::new();
+        files.insert("a.txt".to_string(), b"a".to_vec());
+        files.insert("dir/b.txt".to_string(), b"b".to_vec());
+
+        let result = subtree_file_map(&files, "");
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("a.txt"), Some(&b"a".to_vec()));
+        assert_eq!(result.get("dir/b.txt"), Some(&b"b".to_vec()));
+    }
+
+    #[test]
+    fn subtree_file_map_filters_by_prefix() {
+        let mut files = BTreeMap::new();
+        files.insert("src/a.rs".to_string(), b"a".to_vec());
+        files.insert("src/b.rs".to_string(), b"b".to_vec());
+        files.insert("tests/c.rs".to_string(), b"c".to_vec());
+
+        let result = subtree_file_map(&files, "src");
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("a.rs"), Some(&b"a".to_vec()));
+        assert_eq!(result.get("b.rs"), Some(&b"b".to_vec()));
+        assert!(result.get("c.rs").is_none());
+    }
+
+    #[test]
+    fn subtree_file_map_prefix_exact_match_excluded() {
+        let mut files = BTreeMap::new();
+        files.insert("foo/".to_string(), b"dir".to_vec());
+        files.insert("foo/a.txt".to_string(), b"a".to_vec());
+
+        let result = subtree_file_map(&files, "foo");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("a.txt"), Some(&b"a".to_vec()));
+        assert!(result.get("foo/").is_none());
+    }
+
+    #[test]
+    fn subtree_file_map_nested_prefix_strips_all_components() {
+        let mut files = BTreeMap::new();
+        files.insert("a/b/c.txt".to_string(), b"content".to_vec());
+        files.insert("a/b/d.txt".to_string(), b"other".to_vec());
+
+        let result = subtree_file_map(&files, "a/b");
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("c.txt"), Some(&b"content".to_vec()));
+        assert_eq!(result.get("d.txt"), Some(&b"other".to_vec()));
+    }
+
+    #[test]
+    fn subtree_file_map_empty_input_returns_empty() {
+        let files = BTreeMap::new();
+        let result = subtree_file_map(&files, "foo");
+        assert!(result.is_empty());
+    }
 }
