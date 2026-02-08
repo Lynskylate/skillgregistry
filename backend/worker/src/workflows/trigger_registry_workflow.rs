@@ -1,8 +1,9 @@
 use crate::activities::discovery::DiscoveryResult;
-use crate::workflows::{create_json_payload, execute_activity};
-use futures::future::join_all;
+use crate::contracts;
+use crate::workflows::{
+    create_json_payload, execute_activity, execute_activity_batch, BatchActivityResult,
+};
 use std::time::Duration;
-use temporalio_common::protos::coresdk::activity_result::activity_resolution::Status;
 use temporalio_sdk::{ActivityOptions, WfContext, WfExitValue};
 
 pub async fn trigger_registry_workflow(
@@ -20,7 +21,7 @@ pub async fn trigger_registry_workflow(
     }
 
     let discovery_opts = ActivityOptions {
-        activity_type: "run_registry_discovery_activity".to_string(),
+        activity_type: contracts::activities::RUN_REGISTRY_DISCOVERY.to_string(),
         input: create_json_payload(&registry_id),
         start_to_close_timeout: Some(Duration::from_secs(300)),
         ..Default::default()
@@ -39,27 +40,30 @@ pub async fn trigger_registry_workflow(
         )));
     }
 
-    let mut synced = 0;
-    for chunk in touched_ids.chunks(5) {
-        let mut futures = Vec::new();
-        for &repo_id in chunk {
-            let sync_opts = ActivityOptions {
-                activity_type: "sync_single_skill_activity".to_string(),
-                input: create_json_payload(&repo_id),
-                start_to_close_timeout: Some(Duration::from_secs(300)),
-                ..Default::default()
-            };
-            futures.push(ctx.activity(sync_opts));
-        }
+    let outcomes = execute_activity_batch(
+        &ctx,
+        touched_ids.as_slice(),
+        contracts::WORKFLOW_BATCH_CHUNK_SIZE,
+        |repo_id| ActivityOptions {
+            activity_type: contracts::activities::SYNC_SINGLE_SKILL.to_string(),
+            input: create_json_payload(&repo_id),
+            start_to_close_timeout: Some(Duration::from_secs(300)),
+            ..Default::default()
+        },
+    )
+    .await;
 
-        let results = join_all(futures).await;
-        for res in results {
-            if let Some(status) = res.status {
-                match status {
-                    Status::Completed(_) => synced += 1,
-                    Status::Failed(f) => tracing::error!("Triggered sync failed: {:?}", f),
-                    _ => tracing::error!("Triggered sync returned abnormal status"),
-                }
+    let mut synced = 0;
+    for outcome in outcomes {
+        match outcome {
+            BatchActivityResult::Completed { .. } => synced += 1,
+            BatchActivityResult::Failed(err) => {
+                tracing::error!(error = %err, "Triggered sync failed")
+            }
+            BatchActivityResult::Cancelled => tracing::error!("Triggered sync was cancelled"),
+            BatchActivityResult::Backoff => tracing::error!("Triggered sync returned backoff"),
+            BatchActivityResult::MissingStatus => {
+                tracing::error!("Triggered sync returned missing status")
             }
         }
     }

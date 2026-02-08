@@ -89,7 +89,8 @@ impl DiscoveryActivities {
             .map_err(ActivityError::from)?
             .ok_or_else(|| ActivityError::from(anyhow::anyhow!("registry not found")))?;
 
-        let github = crate::github::GithubClient::new(Some(config.token), config.api_url.clone());
+        let github = crate::github::GithubClient::new(Some(config.token), config.api_url.clone())
+            .map_err(ActivityError::from)?;
         let result = self
             .discover_repos_inner(Some(registry_id), config.queries, &github)
             .await

@@ -174,15 +174,20 @@ fn is_admin(user: &crate::auth::AuthUser) -> bool {
 
 fn create_json_payload(
     data: &impl serde::Serialize,
-) -> temporalio_common::protos::temporal::api::common::v1::Payload {
-    temporalio_common::protos::temporal::api::common::v1::Payload {
-        metadata: std::collections::HashMap::from([(
-            "encoding".to_string(),
-            "json/plain".as_bytes().to_vec(),
-        )]),
-        data: serde_json::to_vec(data).expect("failed to serialize trigger payload"),
-        ..Default::default()
-    }
+) -> Result<temporalio_common::protos::temporal::api::common::v1::Payload, String> {
+    let data = serde_json::to_vec(data)
+        .map_err(|e| format!("failed to serialize trigger payload: {}", e))?;
+
+    Ok(
+        temporalio_common::protos::temporal::api::common::v1::Payload {
+            metadata: std::collections::HashMap::from([(
+                "encoding".to_string(),
+                "json/plain".as_bytes().to_vec(),
+            )]),
+            data,
+            ..Default::default()
+        },
+    )
 }
 
 pub async fn list_skills(
@@ -685,7 +690,10 @@ pub async fn trigger_discovery_registry(
         }
     };
 
-    let payload = create_json_payload(&id);
+    let payload = match create_json_payload(&id) {
+        Ok(payload) => payload,
+        Err(e) => return Json(ApiResponse::error(500, e)),
+    };
 
     let opts = WorkflowOptions::default();
     if let Err(e) = client

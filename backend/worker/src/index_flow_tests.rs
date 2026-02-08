@@ -68,7 +68,7 @@ async fn setup_db() -> Result<(DatabaseConnection, common::Services)> {
     });
 
     let db_arc = std::sync::Arc::new(db.clone());
-    let (_repos, services) = build_all(db_arc, &settings).await;
+    let (_repos, services) = build_all(db_arc, &settings).await?;
 
     Ok((db, services))
 }

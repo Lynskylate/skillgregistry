@@ -352,7 +352,7 @@ mod tests {
         });
 
         let db_arc = std::sync::Arc::new(db.clone());
-        let (_repos, services) = build_all(db_arc, &settings).await;
+        let (_repos, services) = build_all(db_arc, &settings).await?;
 
         let expiry_date = chrono::Utc::now().naive_utc() - chrono::Duration::days(30);
         let old_date = expiry_date - chrono::Duration::days(1);

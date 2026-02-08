@@ -1,18 +1,16 @@
+mod dto;
+mod extractor;
+
 use crate::models::ApiResponse;
-use crate::origin::{is_origin_allowed as origin_matches, parse_frontend_origins};
+use crate::origin::is_origin_allowed as origin_matches;
 use crate::AppState;
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
 use axum::{
-    async_trait,
-    extract::{FromRequestParts, Path, Query, State},
-    http::{
-        header::{AUTHORIZATION, ORIGIN},
-        request::Parts,
-        HeaderMap, StatusCode,
-    },
+    extract::{Path, Query, State},
+    http::{header::ORIGIN, HeaderMap, StatusCode},
     response::{IntoResponse, Redirect},
     routing::{get, post},
     Json, Router,
@@ -27,13 +25,18 @@ use common::entities::{
     auth_identities, local_credentials, org_memberships, refresh_tokens, sso_connections,
     sso_identities, users,
 };
+use dto::{
+    FlowCookiePayload, JwtClaims, LoginRequest, LoginResponse, MeResponse, OAuthCallbackQuery,
+    OidcDiscovery, OidcIdTokenClaims, OidcTokenResponse, RegisterRequest, SsoLookupItem,
+    SsoLookupRequest,
+};
+pub use extractor::AuthUser;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rand::{rngs::OsRng, RngCore};
 use reqwest::Client;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, EntityTrait, IntoActiveModel, QueryFilter, Set,
 };
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use url::Url;
@@ -52,134 +55,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/sso/:connection_id/acs", post(sso_acs))
         .route("/sso/:connection_id/metadata", get(sso_metadata))
         .route("/sso/lookup", post(sso_lookup))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RegisterRequest {
-    pub username: String,
-    pub password: String,
-    pub email: Option<String>,
-    pub display_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LoginRequest {
-    pub identifier: String,
-    pub password: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LoginResponse {
-    pub access_token: String,
-    pub token_type: &'static str,
-    pub expires_in: i64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct OAuthCallbackQuery {
-    pub code: Option<String>,
-    pub state: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SsoLookupRequest {
-    pub email: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SsoLookupItem {
-    pub connection_id: Uuid,
-    pub org_id: Uuid,
-    pub protocol: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct MeResponse {
-    pub user_id: Uuid,
-    pub username: Option<String>,
-    pub role: String,
-    pub display_name: Option<String>,
-    pub primary_email: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct JwtClaims {
-    iss: String,
-    aud: String,
-    sub: String,
-    role: String,
-    iat: i64,
-    exp: i64,
-}
-
-#[derive(Clone, Debug)]
-pub struct AuthUser {
-    pub user_id: Uuid,
-    pub role: String,
-}
-
-#[async_trait]
-impl FromRequestParts<Arc<AppState>> for AuthUser {
-    type Rejection = (StatusCode, Json<ApiResponse<()>>);
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &Arc<AppState>,
-    ) -> Result<Self, Self::Rejection> {
-        let auth_header = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .or_else(|| auth_header.strip_prefix("bearer "))
-            .ok_or_else(|| {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(ApiResponse::error(401, "missing bearer token".to_string())),
-                )
-            })?;
-
-        let signing_key = state.settings.auth.jwt.signing_key.clone().ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(
-                    500,
-                    "jwt signing key not configured".to_string(),
-                )),
-            )
-        })?;
-
-        let mut validation = Validation::default();
-        validation.set_issuer(std::slice::from_ref(&state.settings.auth.jwt.issuer));
-        validation.set_audience(std::slice::from_ref(&state.settings.auth.jwt.audience));
-
-        let decoded = decode::<JwtClaims>(
-            token,
-            &DecodingKey::from_secret(signing_key.as_bytes()),
-            &validation,
-        )
-        .map_err(|_| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(ApiResponse::error(401, "invalid token".to_string())),
-            )
-        })?;
-
-        let user_id = Uuid::parse_str(&decoded.claims.sub).map_err(|_| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(ApiResponse::error(401, "invalid token sub".to_string())),
-            )
-        })?;
-
-        Ok(Self {
-            user_id,
-            role: decoded.claims.role,
-        })
-    }
 }
 
 async fn register(
@@ -1093,39 +968,6 @@ async fn sso_metadata(
         .into_response()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct FlowCookiePayload {
-    state: String,
-    verifier: String,
-    nonce: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OidcDiscovery {
-    authorization_endpoint: String,
-    token_endpoint: String,
-    jwks_uri: String,
-    issuer: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct OidcTokenResponse {
-    id_token: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OidcIdTokenClaims {
-    iss: String,
-    sub: String,
-    aud: serde_json::Value,
-    exp: i64,
-    iat: i64,
-    nonce: Option<String>,
-    email: Option<String>,
-    email_verified: Option<bool>,
-    name: Option<String>,
-}
-
 async fn oauth_callback_github(
     state: &Arc<AppState>,
     client: Client,
@@ -2016,26 +1858,21 @@ async fn issue_tokens_and_set_cookie(
 
 fn origin_allowed_by_config(
     debug: bool,
-    frontend_origin: Option<&str>,
+    allowed_origins: &[String],
     request_origin: Option<&str>,
 ) -> bool {
-    if debug {
+    if debug || allowed_origins.is_empty() {
         return true;
     }
 
-    let allowed_origins = parse_frontend_origins(frontend_origin);
-    if allowed_origins.is_empty() {
-        return true;
-    }
-
-    origin_matches(&allowed_origins, request_origin.unwrap_or(""))
+    origin_matches(allowed_origins, request_origin.unwrap_or(""))
 }
 
 fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     let origin = headers.get(ORIGIN).and_then(|v| v.to_str().ok());
     origin_allowed_by_config(
         state.settings.debug,
-        state.settings.auth.frontend_origin.as_deref(),
+        state.allowed_frontend_origins.as_slice(),
         origin,
     )
 }
@@ -2061,13 +1898,18 @@ mod tests {
 
         let settings = test_settings("test-signing-key");
         let db_arc = std::sync::Arc::new(db);
-        let (repos, services) = common::build_all(db_arc.clone(), &settings).await;
+        let (repos, services) = common::build_all(db_arc.clone(), &settings).await?;
+
+        let allowed_frontend_origins = Arc::new(crate::origin::parse_frontend_origins(
+            settings.auth.frontend_origin.as_deref(),
+        ));
 
         let state = Arc::new(crate::AppState {
             db: db_arc.clone(),
             settings,
             repos,
             services,
+            allowed_frontend_origins,
         });
 
         Ok((db_arc, state))
@@ -2149,25 +1991,29 @@ mod tests {
 
     #[test]
     fn origin_allowlist_accepts_multiple_origins() {
-        let configured = Some("https://app.example.com,https://admin.example.com");
+        let configured = crate::origin::parse_frontend_origins(Some(
+            "https://app.example.com,https://admin.example.com",
+        ));
         assert!(origin_allowed_by_config(
             false,
-            configured,
+            configured.as_slice(),
             Some("https://app.example.com")
         ));
         assert!(origin_allowed_by_config(
             false,
-            configured,
+            configured.as_slice(),
             Some("https://admin.example.com")
         ));
     }
 
     #[test]
     fn origin_allowlist_rejects_unknown_origin() {
-        let configured = Some("https://app.example.com,https://admin.example.com");
+        let configured = crate::origin::parse_frontend_origins(Some(
+            "https://app.example.com,https://admin.example.com",
+        ));
         assert!(!origin_allowed_by_config(
             false,
-            configured,
+            configured.as_slice(),
             Some("https://evil.example.com")
         ));
     }

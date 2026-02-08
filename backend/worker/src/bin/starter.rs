@@ -11,7 +11,7 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let settings = Settings::new().expect("Failed to load configuration");
+    let settings = Settings::new()?;
     let server_url = settings.temporal.server_url;
     let task_queue = settings.temporal.task_queue;
 

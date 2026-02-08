@@ -8,7 +8,7 @@ use sea_orm::*;
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Setup Settings
-    let settings = Settings::new().expect("Failed to load configuration");
+    let settings = Settings::new()?;
 
     println!("=== E2E Verification Start ===");
 

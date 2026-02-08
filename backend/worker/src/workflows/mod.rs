@@ -4,8 +4,17 @@ pub mod sync_scheduler_workflow;
 pub mod trigger_registry_workflow;
 
 use anyhow::{anyhow, Result};
+use futures::future::join_all;
 use temporalio_common::protos::coresdk::activity_result::activity_resolution::Status;
 use temporalio_sdk::{ActivityOptions, LocalActivityOptions, WfContext};
+
+pub enum BatchActivityResult {
+    Completed { payload: Option<Vec<u8>> },
+    Failed(String),
+    Cancelled,
+    Backoff,
+    MissingStatus,
+}
 
 pub fn create_json_payload(
     data: &impl serde::Serialize,
@@ -34,9 +43,6 @@ pub async fn execute_activity<T: serde::de::DeserializeOwned>(
                         .map_err(|e| anyhow!("Failed to deserialize result: {}", e))?;
                     return Ok(result);
                 }
-                // If T is unit, return default?
-                // Hack: try to deserialize empty bytes or just error
-                // For now error if result missing but T expected
                 Err(anyhow!("Activity completed but returned no result"))
             }
             Status::Failed(f) => Err(anyhow!("Activity failed: {:?}", f)),
@@ -75,4 +81,40 @@ pub async fn execute_local_activity<T: serde::de::DeserializeOwned>(
     } else {
         Err(anyhow!("Activity returned no status"))
     }
+}
+
+pub async fn execute_activity_batch<F>(
+    ctx: &WfContext,
+    inputs: &[i32],
+    chunk_size: usize,
+    mut to_options: F,
+) -> Vec<BatchActivityResult>
+where
+    F: FnMut(i32) -> ActivityOptions,
+{
+    let mut outcomes = Vec::new();
+
+    for chunk in inputs.chunks(chunk_size) {
+        let futures = chunk
+            .iter()
+            .map(|input| ctx.activity(to_options(*input)))
+            .collect::<Vec<_>>();
+
+        for result in join_all(futures).await {
+            let outcome = match result.status {
+                Some(Status::Completed(success)) => BatchActivityResult::Completed {
+                    payload: success.result.map(|payload| payload.data),
+                },
+                Some(Status::Failed(failure)) => {
+                    BatchActivityResult::Failed(format!("{:?}", failure))
+                }
+                Some(Status::Cancelled(_)) => BatchActivityResult::Cancelled,
+                Some(Status::Backoff(_)) => BatchActivityResult::Backoff,
+                None => BatchActivityResult::MissingStatus,
+            };
+            outcomes.push(outcome);
+        }
+    }
+
+    outcomes
 }

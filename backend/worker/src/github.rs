@@ -1,10 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use reqwest::{Client, Response, StatusCode};
+use common::infra::github_http::{build_github_client, send_request_with_retry};
+use reqwest::Client;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::Duration;
 use tokio::process::Command;
 use url::Url;
 use walkdir::WalkDir;
@@ -55,19 +55,9 @@ pub struct GithubClient {
 }
 
 impl GithubClient {
-    pub fn new(token: Option<String>, api_url: String) -> Self {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("User-Agent", "SkillRegistry/1.0".parse().unwrap());
-        headers.insert("Accept", "application/vnd.github.v3+json".parse().unwrap());
-
-        if let Some(ref t) = token {
-            headers.insert("Authorization", format!("Bearer {}", t).parse().unwrap());
-        }
-
-        Self {
-            client: Client::builder().default_headers(headers).build().unwrap(),
-            api_url,
-        }
+    pub fn new(token: Option<String>, api_url: String) -> Result<Self> {
+        let client = build_github_client(token.as_deref())?;
+        Ok(Self { client, api_url })
     }
 
     pub async fn search_repositories(&self, query: &str) -> Result<Vec<GithubRepo>> {
@@ -76,13 +66,17 @@ impl GithubClient {
         let per_page = 100;
 
         loop {
-            let url = format!(
-                "{}/search/repositories?q={}&per_page={}&page={}",
-                self.api_url, query, per_page, page
-            );
-            tracing::debug!("Fetching page {}: {}", page, url);
+            let url = format!("{}/search/repositories", self.api_url);
+            tracing::debug!(page, query, "Fetching GitHub repository search page");
 
-            let resp = self.send_request_with_retry(&url).await?;
+            let per_page_str = per_page.to_string();
+            let page_str = page.to_string();
+            let req = self.client.get(&url).query(&[
+                ("q", query),
+                ("per_page", per_page_str.as_str()),
+                ("page", page_str.as_str()),
+            ]);
+            let resp = send_request_with_retry(req, "worker search repositories").await?;
             let search_resp: GithubSearchResponse = resp.json().await?;
 
             if search_resp.items.is_empty() {
@@ -106,24 +100,24 @@ impl GithubClient {
         let mut page = 1;
         let per_page = 100;
 
-        // Code search rate limits are stricter, and results per page max is 100.
-        // Also total results are limited to 1000.
         loop {
-            let url = format!(
-                "{}/search/code?q={}&per_page={}&page={}",
-                self.api_url, query, per_page, page
-            );
-            tracing::debug!("Fetching code page {}: {}", page, url);
+            let url = format!("{}/search/code", self.api_url);
+            tracing::debug!(page, query, "Fetching GitHub code search page");
 
-            let resp = self.send_request_with_retry(&url).await?;
+            let per_page_str = per_page.to_string();
+            let page_str = page.to_string();
+            let req = self.client.get(&url).query(&[
+                ("q", query),
+                ("per_page", per_page_str.as_str()),
+                ("page", page_str.as_str()),
+            ]);
+            let resp = send_request_with_retry(req, "worker search code").await?;
             let search_resp: GithubCodeSearchResponse = resp.json().await?;
 
             if search_resp.items.is_empty() {
                 break;
             }
 
-            // Code search returns items with minimal repo info.
-            // The `repository` field in GithubCodeItem contains the GithubRepo structure
             for item in search_resp.items {
                 all_repos.push(item.repository);
             }
@@ -140,7 +134,8 @@ impl GithubClient {
 
     pub async fn download_zipball(&self, owner: &str, repo: &str) -> Result<Vec<u8>> {
         let url = format!("{}/repos/{}/{}/zipball", self.api_url, owner, repo);
-        let resp = self.send_request_with_retry(&url).await?;
+        let req = self.client.get(&url);
+        let resp = send_request_with_retry(req, "worker download zipball").await?;
         let bytes = resp.bytes().await?;
         Ok(bytes.to_vec())
     }
@@ -262,52 +257,6 @@ impl GithubClient {
             text = text.replace(auth_token, "***");
         }
         text
-    }
-
-    async fn send_request_with_retry(&self, url: &str) -> Result<Response> {
-        let mut attempts = 0;
-        loop {
-            attempts += 1;
-            let resp = self.client.get(url).send().await?;
-
-            match resp.status() {
-                StatusCode::OK => return Ok(resp),
-                StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS => {
-                    if attempts >= 5 {
-                        return Err(anyhow::anyhow!(
-                            "Rate limit exceeded after {} attempts",
-                            attempts
-                        ));
-                    }
-
-                    let wait_time = if let Some(retry_after) = resp.headers().get("Retry-After") {
-                        retry_after.to_str().unwrap_or("60").parse().unwrap_or(60)
-                    } else {
-                        60
-                    };
-
-                    tracing::warn!("Rate limit hit, waiting {}s...", wait_time);
-                    tokio::time::sleep(Duration::from_secs(wait_time)).await;
-                }
-                StatusCode::UNPROCESSABLE_ENTITY => {
-                    // 422 usually means validation failed, e.g. search query too long or specific constraints
-                    return Err(anyhow::anyhow!(
-                        "Unprocessable Entity (422) on url {}. Check query syntax.",
-                        url
-                    ));
-                }
-                _ => {
-                    if attempts >= 3 {
-                        return Err(anyhow::anyhow!(
-                            "Request failed: {} on url {}",
-                            resp.status(),
-                            url
-                        ));
-                    }
-                    tokio::time::sleep(Duration::from_secs(2u64.pow(attempts))).await;
-                }
-            }
-        }
     }
 }
 
