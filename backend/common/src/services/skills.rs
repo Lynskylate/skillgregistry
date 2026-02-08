@@ -4,6 +4,7 @@ use crate::repositories::skills::{ListSkillsParams, SkillRepository, SkillWithRe
 use crate::s3::S3Service;
 use async_trait::async_trait;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Serialize)]
@@ -109,18 +110,40 @@ impl SkillServiceImpl {
         }
     }
 
-    async fn latest_version_model(
+    async fn latest_versions_map(
         &self,
-        skill: &crate::entities::skills::Model,
-    ) -> Result<Option<crate::entities::skill_versions::Model>, ServiceError> {
-        if let Some(version) = skill.latest_version.as_deref() {
-            self.skill_repo
-                .find_version_by_name(skill.id, version)
-                .await
-                .map_err(ServiceError::from)
-        } else {
-            Ok(None)
+        items: &[SkillWithRegistry],
+    ) -> Result<HashMap<i32, crate::entities::skill_versions::Model>, ServiceError> {
+        let skill_ids = items
+            .iter()
+            .filter(|item| item.skill.latest_version.is_some())
+            .map(|item| item.skill.id)
+            .collect::<Vec<_>>();
+        if skill_ids.is_empty() {
+            return Ok(HashMap::new());
         }
+
+        let versions = self
+            .skill_repo
+            .find_versions_for_skills(&skill_ids)
+            .await
+            .map_err(ServiceError::from)?;
+
+        let mut by_key = HashMap::with_capacity(versions.len());
+        for version in versions {
+            by_key.insert((version.skill_id, version.version.clone()), version);
+        }
+
+        let mut latest_by_skill = HashMap::new();
+        for item in items {
+            if let Some(latest_version) = item.skill.latest_version.as_ref() {
+                if let Some(model) = by_key.remove(&(item.skill.id, latest_version.clone())) {
+                    latest_by_skill.insert(item.skill.id, model);
+                }
+            }
+        }
+
+        Ok(latest_by_skill)
     }
 
     fn extract_host(url: &str) -> String {
@@ -172,11 +195,16 @@ impl SkillServiceImpl {
         }
 
         value.as_str().and_then(|single| {
-            let trimmed = single.trim();
-            if trimmed.is_empty() {
+            let out = single
+                .split(',')
+                .map(str::trim)
+                .filter(|segment| !segment.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            if out.is_empty() {
                 None
             } else {
-                Some(vec![trimmed.to_string()])
+                Some(out)
             }
         })
     }
@@ -196,10 +224,20 @@ impl SkillServiceImpl {
             .unwrap_or(false)
     }
 
-    async fn to_skill_dto(&self, item: SkillWithRegistry) -> Result<SkillDto, ServiceError> {
-        let latest_version = self.latest_version_model(&item.skill).await?;
-        let description = latest_version.and_then(|v| v.description);
-        Ok(SkillDto {
+    fn matches_compatibility(
+        latest_version: Option<&crate::entities::skill_versions::Model>,
+        compatibility: &str,
+    ) -> bool {
+        let metadata = latest_version.and_then(|version| version.metadata.as_ref());
+        Self::has_compatibility(metadata, compatibility)
+    }
+
+    fn to_skill_dto(
+        item: SkillWithRegistry,
+        latest_version: Option<&crate::entities::skill_versions::Model>,
+    ) -> SkillDto {
+        let description = latest_version.and_then(|version| version.description.clone());
+        SkillDto {
             id: item.skill.id,
             name: item.skill.name,
             owner: item.registry.owner.clone(),
@@ -214,7 +252,7 @@ impl SkillServiceImpl {
             created_at: item.skill.created_at,
             install_count: item.skill.install_count,
             stars: item.registry.stars,
-        })
+        }
     }
 }
 
@@ -228,11 +266,76 @@ impl SkillService for SkillServiceImpl {
             .compatibility
             .map(str::trim)
             .filter(|v| !v.is_empty());
-        let page = params.page.max(1);
-        let per_page = params.per_page.max(1);
 
         if let Some(compatibility) = compatibility_filter {
-            let all_params = ListSkillsParams {
+            let requested_page = params.page.max(1);
+            let requested_per_page = params.per_page.max(1);
+            let start = requested_page
+                .saturating_sub(1)
+                .saturating_mul(requested_per_page);
+            let end = start.saturating_add(requested_per_page);
+            let scan_per_page = requested_per_page.max(100);
+
+            let mut matched_total = 0_u64;
+            let mut scan_page = 1_u64;
+            let mut selected_items = Vec::new();
+
+            loop {
+                let batch = self
+                    .skill_repo
+                    .list_skills(ListSkillsParams {
+                        host: params.host,
+                        org: params.org,
+                        owner: params.owner,
+                        repo: params.repo,
+                        query: params.query,
+                        sort_by: params.sort_by,
+                        order: params.order,
+                        compatibility: None,
+                        has_version: params.has_version,
+                        page: scan_page,
+                        per_page: scan_per_page,
+                    })
+                    .await?;
+
+                if batch.items.is_empty() {
+                    break;
+                }
+
+                let latest_versions = self.latest_versions_map(&batch.items).await?;
+                for item in batch.items {
+                    let latest = latest_versions.get(&item.skill.id);
+                    if Self::matches_compatibility(latest, compatibility) {
+                        if matched_total >= start && matched_total < end {
+                            selected_items.push((item, latest.cloned()));
+                        }
+                        matched_total = matched_total.saturating_add(1);
+                    }
+                }
+
+                if !batch.has_next {
+                    break;
+                }
+                scan_page = scan_page.saturating_add(1);
+            }
+
+            let items = selected_items
+                .into_iter()
+                .map(|(item, latest)| Self::to_skill_dto(item, latest.as_ref()))
+                .collect::<Vec<_>>();
+
+            return Ok(PaginatedSkillsResponse {
+                has_next: requested_page.saturating_mul(requested_per_page) < matched_total,
+                items,
+                total: matched_total,
+                page: requested_page,
+                per_page: requested_per_page,
+            });
+        }
+
+        let paginated = self
+            .skill_repo
+            .list_skills(ListSkillsParams {
                 host: params.host,
                 org: params.org,
                 owner: params.owner,
@@ -242,52 +345,23 @@ impl SkillService for SkillServiceImpl {
                 order: params.order,
                 compatibility: None,
                 has_version: params.has_version,
-                page: 1,
-                per_page: u64::MAX,
-            };
+                page: params.page,
+                per_page: params.per_page,
+            })
+            .await?;
 
-            let all_items = self.skill_repo.list_skills_all(all_params).await?;
-            let mut filtered = Vec::new();
-            for item in all_items {
-                let latest = self.latest_version_model(&item.skill).await?;
-                let metadata = latest.as_ref().and_then(|v| v.metadata.as_ref());
-                if Self::has_compatibility(metadata, compatibility) {
-                    filtered.push(item);
-                }
-            }
-
-            let total = filtered.len() as u64;
-            let start = ((page - 1) * per_page) as usize;
-            let end = std::cmp::min(start + per_page as usize, filtered.len());
-            let page_items = if start >= filtered.len() {
-                Vec::new()
-            } else {
-                filtered.drain(start..end).collect::<Vec<_>>()
-            };
-
-            let mut dtos = Vec::with_capacity(page_items.len());
-            for item in page_items {
-                dtos.push(self.to_skill_dto(item).await?);
-            }
-
-            return Ok(PaginatedSkillsResponse {
-                has_next: page.saturating_mul(per_page) < total,
-                items: dtos,
-                total,
-                page,
-                per_page,
-            });
-        }
-
-        let paginated = self.skill_repo.list_skills(params).await?;
-
-        let mut dtos = Vec::with_capacity(paginated.items.len());
-        for item in paginated.items {
-            dtos.push(self.to_skill_dto(item).await?);
-        }
+        let latest_versions = self.latest_versions_map(&paginated.items).await?;
+        let items = paginated
+            .items
+            .into_iter()
+            .map(|item| {
+                let latest = latest_versions.get(&item.skill.id);
+                Self::to_skill_dto(item, latest)
+            })
+            .collect::<Vec<_>>();
 
         Ok(PaginatedSkillsResponse {
-            items: dtos,
+            items,
             total: paginated.total,
             page: paginated.page,
             per_page: paginated.per_page,

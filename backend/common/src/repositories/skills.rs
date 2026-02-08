@@ -60,11 +60,6 @@ pub trait SkillRepository: Send + Sync {
         params: ListSkillsParams<'_>,
     ) -> Result<PaginatedSkillsResult, DbErr>;
 
-    async fn list_skills_all(
-        &self,
-        params: ListSkillsParams<'_>,
-    ) -> Result<Vec<SkillWithRegistry>, DbErr>;
-
     async fn find_by_registry_name(
         &self,
         registry_id: i32,
@@ -78,6 +73,11 @@ pub trait SkillRepository: Send + Sync {
         skill_id: i32,
         version: &str,
     ) -> Result<Option<skill_versions::Model>, DbErr>;
+
+    async fn find_versions_for_skills(
+        &self,
+        skill_ids: &[i32],
+    ) -> Result<Vec<skill_versions::Model>, DbErr>;
 
     async fn list_standalone_skills(&self, registry_id: i32) -> Result<Vec<skills::Model>, DbErr>;
 
@@ -235,98 +235,6 @@ impl SkillRepository for SkillRepositoryImpl {
         })
     }
 
-    async fn list_skills_all(
-        &self,
-        params: ListSkillsParams<'_>,
-    ) -> Result<Vec<SkillWithRegistry>, DbErr> {
-        let mut query_builder = Skills::find()
-            .filter(skills::Column::IsActive.eq(1))
-            .find_also_related(SkillRegistry)
-            .filter(skill_registry::Column::Status.ne("blacklisted"));
-
-        if let Some(host) = params.host {
-            query_builder = query_builder.filter(host_filter_condition(host));
-        }
-
-        let owner = params.owner.or(params.org);
-        if let Some(owner) = owner {
-            query_builder = query_builder.filter(skill_registry::Column::Owner.eq(owner));
-        }
-        if let Some(repo) = params.repo {
-            query_builder = query_builder.filter(skill_registry::Column::Name.eq(repo));
-        }
-        if let Some(query_str) = params.query {
-            query_builder = query_builder.filter(
-                Condition::any()
-                    .add(skills::Column::Name.contains(query_str))
-                    .add(skill_registry::Column::Owner.contains(query_str))
-                    .add(skill_registry::Column::Name.contains(query_str)),
-            );
-        }
-
-        if let Some(has_version) = params.has_version {
-            query_builder = if has_version {
-                query_builder.filter(
-                    Condition::all()
-                        .add(skills::Column::LatestVersion.is_not_null())
-                        .add(skills::Column::LatestVersion.ne("")),
-                )
-            } else {
-                query_builder.filter(
-                    Condition::any()
-                        .add(skills::Column::LatestVersion.is_null())
-                        .add(skills::Column::LatestVersion.eq("")),
-                )
-            };
-        }
-
-        let query = match params.sort_by {
-            Some("name") => {
-                if params.order == Some("desc") {
-                    query_builder.order_by_desc(skills::Column::Name)
-                } else {
-                    query_builder.order_by_asc(skills::Column::Name)
-                }
-            }
-            Some("updated_at") => {
-                if params.order == Some("asc") {
-                    query_builder.order_by_asc(skills::Column::UpdatedAt)
-                } else {
-                    query_builder.order_by_desc(skills::Column::UpdatedAt)
-                }
-            }
-            Some("stars") => {
-                if params.order == Some("asc") {
-                    query_builder.order_by_asc(skill_registry::Column::Stars)
-                } else {
-                    query_builder.order_by_desc(skill_registry::Column::Stars)
-                }
-            }
-            Some("installs") => {
-                if params.order == Some("asc") {
-                    query_builder.order_by_asc(skills::Column::InstallCount)
-                } else {
-                    query_builder.order_by_desc(skills::Column::InstallCount)
-                }
-            }
-            _ => {
-                if params.order == Some("asc") {
-                    query_builder.order_by_asc(skills::Column::CreatedAt)
-                } else {
-                    query_builder.order_by_desc(skills::Column::CreatedAt)
-                }
-            }
-        };
-
-        let items = query.all(self.db.as_ref()).await?;
-        Ok(items
-            .into_iter()
-            .filter_map(|(skill, registry_opt)| {
-                registry_opt.map(|registry| SkillWithRegistry { skill, registry })
-            })
-            .collect())
-    }
-
     async fn find_by_registry_name(
         &self,
         registry_id: i32,
@@ -356,6 +264,20 @@ impl SkillRepository for SkillRepositoryImpl {
             .filter(skill_versions::Column::SkillId.eq(skill_id))
             .filter(skill_versions::Column::Version.eq(version))
             .one(self.db.as_ref())
+            .await
+    }
+
+    async fn find_versions_for_skills(
+        &self,
+        skill_ids: &[i32],
+    ) -> Result<Vec<skill_versions::Model>, DbErr> {
+        if skill_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        SkillVersions::find()
+            .filter(skill_versions::Column::SkillId.is_in(skill_ids.iter().copied()))
+            .all(self.db.as_ref())
             .await
     }
 

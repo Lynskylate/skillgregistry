@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react"
+import { FormEvent, useEffect, useRef, useState } from "react"
 import { api } from "@/lib/api"
 import type { ApiResponse } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
@@ -98,10 +98,82 @@ export default function DiscoveryRegistries() {
 
   const [deleteValidation, setDeleteValidation] = useState<{ id: number; reasons: string[] } | null>(null)
   const [deleteConfirmationInput, setDeleteConfirmationInput] = useState("")
+  const deleteDialogRef = useRef<HTMLDivElement | null>(null)
+  const deleteInputRef = useRef<HTMLInputElement | null>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     fetchRegistries()
   }, [])
+
+  useEffect(() => {
+    if (!deleteValidation) return
+
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+
+    const dialog = deleteDialogRef.current
+    const focusSelector =
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+    const moveFocusIntoDialog = () => {
+      if (deleteInputRef.current) {
+        deleteInputRef.current.focus()
+        return
+      }
+      const firstFocusable = dialog?.querySelector<HTMLElement>(focusSelector)
+      firstFocusable?.focus()
+    }
+
+    const focusTimer = window.setTimeout(moveFocusIntoDialog, 0)
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!deleteValidation) return
+
+      if (event.key === "Escape") {
+        event.preventDefault()
+        setDeleteValidation(null)
+        return
+      }
+
+      if (event.key !== "Tab" || !dialog) return
+
+      const focusableElements = Array.from(dialog.querySelectorAll<HTMLElement>(focusSelector)).filter(
+        (element) => element.tabIndex !== -1,
+      )
+
+      if (focusableElements.length === 0) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+
+      const first = focusableElements[0]
+      const last = focusableElements[focusableElements.length - 1]
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+      if (event.shiftKey) {
+        if (!active || active === first || !dialog.contains(active)) {
+          event.preventDefault()
+          last.focus()
+        }
+      } else if (!active || active === last || !dialog.contains(active)) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown)
+
+    return () => {
+      window.clearTimeout(focusTimer)
+      document.removeEventListener("keydown", onKeyDown)
+      document.body.style.overflow = previousOverflow
+      previousFocusRef.current?.focus()
+    }
+  }, [deleteValidation])
 
   const fetchRegistries = async () => {
     setLoading(true)
@@ -513,12 +585,21 @@ export default function DiscoveryRegistries() {
       </div>
 
       {deleteValidation && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="w-full max-w-md">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-registry-dialog-title"
+          aria-describedby="delete-registry-dialog-description"
+        >
+          <Card ref={deleteDialogRef} className="w-full max-w-md" tabIndex={-1}>
             <CardHeader>
-              <CardTitle>Confirm Deletion</CardTitle>
+              <CardTitle id="delete-registry-dialog-title">Confirm Deletion</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <p id="delete-registry-dialog-description" className="text-sm text-muted-foreground">
+                This action permanently deletes the discovery registry.
+              </p>
               {deleteValidation.reasons.length > 0 && (
                 <div className="space-y-2">
                   <p className="font-medium">Please note:</p>
@@ -530,8 +611,12 @@ export default function DiscoveryRegistries() {
                 </div>
               )}
               <div>
-                <label className="text-sm font-medium">Type registry ID to confirm:</label>
+                <label htmlFor="delete-registry-confirmation" className="text-sm font-medium">
+                  Type registry ID to confirm:
+                </label>
                 <Input
+                  id="delete-registry-confirmation"
+                  ref={deleteInputRef}
                   value={deleteConfirmationInput}
                   onChange={(e) => setDeleteConfirmationInput(e.target.value)}
                   placeholder={deleteValidation.id.toString()}
