@@ -9,6 +9,7 @@ use crate::services::{
     plugins::PluginServiceImpl, registry::RegistryServiceImpl, skills::SkillServiceImpl,
 };
 use crate::settings::{S3Settings, Settings};
+use anyhow::Result;
 use sea_orm::DatabaseConnection;
 use std::sync::Arc;
 
@@ -41,11 +42,14 @@ pub fn build_repositories(db: Arc<DatabaseConnection>) -> Repositories {
     }
 }
 
-pub fn build_github_service(token: Option<String>, api_url: String) -> Arc<dyn GithubService> {
-    Arc::new(GithubClient::new(token, api_url))
+pub fn build_github_service(
+    token: Option<String>,
+    api_url: String,
+) -> Result<Arc<dyn GithubService>> {
+    Ok(Arc::new(GithubClient::new(token, api_url)?))
 }
 
-pub async fn build_services(repos: &Repositories, settings: &Settings) -> Services {
+pub async fn build_services(repos: &Repositories, settings: &Settings) -> Result<Services> {
     let s3 = build_s3_service(&settings.s3).await;
 
     let skill_service = Arc::new(SkillServiceImpl::new(
@@ -69,16 +73,16 @@ pub async fn build_services(repos: &Repositories, settings: &Settings) -> Servic
     let github_service = build_github_service(
         settings.github.token.clone(),
         settings.github.api_url.clone(),
-    );
+    )?;
 
-    Services {
+    Ok(Services {
         skill_service,
         plugin_service,
         registry_service,
         discovery_registry_service,
         github_service,
         s3,
-    }
+    })
 }
 
 pub async fn build_s3_service(s3_settings: &S3Settings) -> Arc<S3Service> {
@@ -98,8 +102,8 @@ pub async fn build_s3_service(s3_settings: &S3Settings) -> Arc<S3Service> {
 pub async fn build_all(
     db: Arc<DatabaseConnection>,
     settings: &Settings,
-) -> (Repositories, Services) {
+) -> Result<(Repositories, Services)> {
     let repos = build_repositories(db.clone());
-    let services = build_services(&repos, settings).await;
-    (repos, services)
+    let services = build_services(&repos, settings).await?;
+    Ok((repos, services))
 }

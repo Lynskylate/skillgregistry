@@ -1,4 +1,3 @@
-use clap::Parser;
 use dotenvy::dotenv;
 use figment::{
     providers::{Env, Format, Serialized, Toml},
@@ -6,13 +5,61 @@ use figment::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Parser, Debug)]
+#[derive(Debug, Default)]
 struct Cli {
-    #[clap(long)]
     port: Option<u16>,
-
-    #[clap(long)]
     config: Option<String>,
+}
+
+fn parse_cli_from_args<I, S>(args: I) -> Cli
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut cli = Cli::default();
+    let mut iter = args.into_iter().map(Into::into);
+
+    // Skip binary name
+    let _ = iter.next();
+
+    while let Some(arg) = iter.next() {
+        if let Some(raw_port) = arg.strip_prefix("--port=") {
+            if let Ok(port) = raw_port.parse::<u16>() {
+                cli.port = Some(port);
+            }
+            continue;
+        }
+
+        if arg == "--port" {
+            if let Some(raw_port) = iter.next() {
+                if let Ok(port) = raw_port.parse::<u16>() {
+                    cli.port = Some(port);
+                }
+            }
+            continue;
+        }
+
+        if let Some(raw_config) = arg.strip_prefix("--config=") {
+            if !raw_config.is_empty() {
+                cli.config = Some(raw_config.to_string());
+            }
+            continue;
+        }
+
+        if arg == "--config" {
+            if let Some(config) = iter.next() {
+                if !config.is_empty() {
+                    cli.config = Some(config);
+                }
+            }
+        }
+    }
+
+    cli
+}
+
+fn parse_cli() -> Cli {
+    parse_cli_from_args(std::env::args())
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -152,7 +199,7 @@ impl Settings {
     #[allow(clippy::result_large_err)]
     pub fn new() -> Result<Self, figment::Error> {
         dotenv().ok();
-        let cli = Cli::parse();
+        let cli = parse_cli();
 
         let mut figment = Figment::from(Serialized::defaults(Settings::default()));
 
@@ -211,5 +258,34 @@ impl Default for Settings {
             },
             auth: AuthSettings::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cli_from_args;
+
+    #[test]
+    fn parse_cli_ignores_unknown_flags() {
+        let cli = parse_cli_from_args(["api-bin", "--quiet", "--nocapture", "--port", "4010"]);
+
+        assert_eq!(cli.port, Some(4010));
+        assert_eq!(cli.config, None);
+    }
+
+    #[test]
+    fn parse_cli_supports_equals_syntax() {
+        let cli = parse_cli_from_args(["api-bin", "--config=local.toml", "--port=3111"]);
+
+        assert_eq!(cli.port, Some(3111));
+        assert_eq!(cli.config.as_deref(), Some("local.toml"));
+    }
+
+    #[test]
+    fn parse_cli_ignores_invalid_port_values() {
+        let cli = parse_cli_from_args(["api-bin", "--port", "invalid"]);
+
+        assert_eq!(cli.port, None);
+        assert_eq!(cli.config, None);
     }
 }

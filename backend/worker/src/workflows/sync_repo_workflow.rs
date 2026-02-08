@@ -1,4 +1,5 @@
 use crate::activities::sync::{SnapshotResult, SyncResult};
+use crate::contracts;
 use crate::workflows::{create_json_payload, execute_local_activity};
 use std::time::Duration;
 use temporalio_common::protos::temporal::api::common::v1::RetryPolicy;
@@ -23,7 +24,7 @@ pub async fn sync_repo_workflow(ctx: WfContext) -> Result<WfExitValue<String>, a
     };
 
     let snapshot_opts = LocalActivityOptions {
-        activity_type: "fetch_repo_snapshot_activity".to_string(),
+        activity_type: contracts::activities::FETCH_REPO_SNAPSHOT.to_string(),
         input: create_json_payload(&registry_id),
         start_to_close_timeout: Some(Duration::from_secs(120)),
         schedule_to_close_timeout: Some(Duration::from_secs(180)),
@@ -45,7 +46,7 @@ pub async fn sync_repo_workflow(ctx: WfContext) -> Result<WfExitValue<String>, a
     };
 
     let apply_opts = LocalActivityOptions {
-        activity_type: "apply_sync_from_snapshot_activity".to_string(),
+        activity_type: contracts::activities::APPLY_SYNC_FROM_SNAPSHOT.to_string(),
         input: create_json_payload(&snapshot),
         start_to_close_timeout: Some(Duration::from_secs(600)),
         schedule_to_close_timeout: Some(Duration::from_secs(900)),

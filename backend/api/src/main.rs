@@ -24,11 +24,12 @@ pub struct AppState {
     pub settings: Settings,
     pub services: common::Services,
     pub repos: common::Repositories,
+    pub allowed_frontend_origins: Arc<Vec<String>>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let settings = Settings::new().expect("Failed to load configuration");
+    let settings = Settings::new()?;
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
@@ -42,16 +43,21 @@ async fn main() -> anyhow::Result<()> {
     let db = common::db::establish_connection(&db_url).await?;
     let db = Arc::new(db);
 
-    let (repos, services) = build_all(db.clone(), &settings).await;
+    let (repos, services) = build_all(db.clone(), &settings).await?;
+
+    let allowed_frontend_origins = Arc::new(parse_frontend_origins(
+        settings.auth.frontend_origin.as_deref(),
+    ));
 
     let state = Arc::new(AppState {
         db,
         settings: settings.clone(),
         services,
         repos,
+        allowed_frontend_origins: Arc::clone(&allowed_frontend_origins),
     });
 
-    let cors = build_cors(&settings);
+    let cors = build_cors(settings.debug, Arc::clone(&allowed_frontend_origins));
 
     let app: Router = Router::new()
         .route("/", get(|| async { "Skill Registry API" }))
@@ -119,24 +125,21 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], settings.port));
     tracing::info!("listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
 
-fn build_cors(settings: &Settings) -> CorsLayer {
-    let allowed_origins = parse_frontend_origins(settings.auth.frontend_origin.as_deref());
-
-    match (settings.debug, allowed_origins.is_empty()) {
+fn build_cors(debug: bool, allowed_origins: Arc<Vec<String>>) -> CorsLayer {
+    match (debug, allowed_origins.is_empty()) {
         (false, false) => {
-            let allowed = Arc::new(allowed_origins);
             let allow_origin =
                 AllowOrigin::predicate(move |origin: &HeaderValue, _request: &Parts| {
                     let Ok(origin) = origin.to_str() else {
                         return false;
                     };
-                    is_origin_allowed(&allowed, origin)
+                    is_origin_allowed(allowed_origins.as_slice(), origin)
                 });
 
             CorsLayer::new()
