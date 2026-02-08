@@ -197,7 +197,7 @@ impl MigrationTrait for Migration {
                     )
                     .col(uuid(RefreshTokens::UserId))
                     .col(string(RefreshTokens::TokenHash))
-                    .col(integer_null(RefreshTokens::RotatedFrom))
+                    .col(big_integer(RefreshTokens::RotatedFrom).null())
                     .col(date_time(RefreshTokens::ExpiresAt))
                     .col(date_time_null(RefreshTokens::RevokedAt))
                     .col(string_null(RefreshTokens::UserAgent))

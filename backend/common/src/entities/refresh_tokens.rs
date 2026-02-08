@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 #[sea_orm(table_name = "refresh_tokens")]
 pub struct Model {
     #[sea_orm(primary_key)]
-    pub id: i32,
+    pub id: i64,
     pub user_id: Uuid,
     pub token_hash: String,
     #[sea_orm(nullable)]
-    pub rotated_from: Option<i32>,
+    pub rotated_from: Option<i64>,
     pub expires_at: DateTime,
     #[sea_orm(nullable)]
     pub revoked_at: Option<DateTime>,
