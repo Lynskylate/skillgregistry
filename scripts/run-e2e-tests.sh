@@ -178,6 +178,7 @@ export E2E_SYNC_TIMEOUT_SECS="${E2E_SYNC_TIMEOUT_SECS:-600}"
 export RUST_LOG="${RUST_LOG:-info}"
 RUN_LEGACY_E2E="${RUN_LEGACY_E2E:-0}"
 RUN_ADMIN_E2E="${RUN_ADMIN_E2E:-1}"
+RUN_AUTH_E2E="${RUN_AUTH_E2E:-0}"
 
 cd "$BACKEND_DIR"
 rm -f /tmp/skillregistry-e2e.db
@@ -208,6 +209,12 @@ if [ "$RUN_ADMIN_E2E" = "1" ]; then
   run_test_or_fail "test_admin_registry_trigger_and_index_two_queries" "admin registry + trigger + index"
 else
   print_info "Skipping admin registry+trigger+index e2e (RUN_ADMIN_E2E=$RUN_ADMIN_E2E)"
+fi
+
+if [ "$RUN_AUTH_E2E" = "1" ]; then
+  run_test_or_fail "test_auth_logout_revokes_refresh_cookie" "auth logout refresh revoke"
+else
+  print_info "Skipping auth logout e2e (RUN_AUTH_E2E=$RUN_AUTH_E2E)"
 fi
 
 print_info "E2E tests passed"

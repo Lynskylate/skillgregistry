@@ -56,10 +56,17 @@ async fn main() -> anyhow::Result<()> {
     let app: Router = Router::new()
         .route("/", get(|| async { "Skill Registry API" }))
         .route("/api/skills", get(handlers::list_skills))
-        .route("/api/skills/:owner/:repo/:name", get(handlers::get_skill))
         .route(
-            "/api/skills/:owner/:repo/:name/versions/:version",
-            get(handlers::get_skill_version),
+            "/api/:host/:org/:repo/skill/:name",
+            get(handlers::get_repo_skill_detail),
+        )
+        .route(
+            "/api/:host/:org/:repo/skill/:name/versions/:version",
+            get(handlers::get_repo_skill_version),
+        )
+        .route(
+            "/api/:host/:org/:repo/skill/:name/download",
+            get(handlers::download_repo_skill),
         )
         .route(
             "/api/:host/:org/:repo/plugin",
@@ -93,6 +100,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/admin/discovery-registries/:id",
             patch(handlers::update_discovery_registry).delete(handlers::delete_discovery_registry),
+        )
+        .route(
+            "/api/admin/discovery-registries/:id/validate-delete",
+            post(handlers::validate_delete_discovery_registry),
         )
         .route(
             "/api/admin/discovery-registries/:id/test-health",

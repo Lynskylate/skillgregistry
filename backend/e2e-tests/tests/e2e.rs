@@ -167,6 +167,11 @@ struct SkillListItemDto {
     repo: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SkillListPageDto {
+    items: Vec<SkillListItemDto>,
+}
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 struct SkillKey {
     owner: String,
@@ -417,6 +422,113 @@ async fn test_admin_registry_trigger_and_index_two_queries() -> Result<()> {
                 );
             }
         }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires API and admin credentials"]
+async fn test_auth_logout_revokes_refresh_cookie() -> Result<()> {
+    let api_base_url = env_or("E2E_API_BASE_URL", "http://localhost:3000");
+    let admin_username = env_or("E2E_ADMIN_USERNAME", "admin");
+    let admin_password = env_or("E2E_ADMIN_PASSWORD", "admin");
+    let origin = api_origin_from_base_url(&api_base_url)?;
+
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .context("failed to build HTTP client")?;
+
+    let login_response = client
+        .post(format!("{}/api/auth/login", api_base_url))
+        .json(&serde_json::json!({
+            "identifier": admin_username,
+            "password": admin_password,
+        }))
+        .send()
+        .await
+        .context("failed to login as admin")?;
+
+    let (_status, login_envelope): (StatusCode, ApiEnvelope<LoginResponse>) =
+        parse_api_envelope(login_response, "admin login for logout e2e").await?;
+    let login = require_api_success(login_envelope, "admin login for logout e2e")?;
+
+    let me_with_token = client
+        .get(format!("{}/api/me", api_base_url))
+        .bearer_auth(&login.access_token)
+        .send()
+        .await
+        .context("failed to call /api/me with access token")?;
+    let (me_status, me_envelope): (StatusCode, ApiEnvelope<serde_json::Value>) =
+        parse_api_envelope(me_with_token, "me with bearer token").await?;
+
+    if me_status != StatusCode::OK || me_envelope.code != 200 {
+        bail!(
+            "expected /api/me with bearer token to succeed with HTTP 200/code 200, got HTTP {} code {} message '{}'",
+            me_status,
+            me_envelope.code,
+            me_envelope.message
+        );
+    }
+
+    let logout_response = client
+        .post(format!("{}/api/auth/logout", api_base_url))
+        .header(reqwest::header::ORIGIN, origin.as_str())
+        .send()
+        .await
+        .context("failed to call /api/auth/logout")?;
+
+    let (logout_status, logout_envelope): (StatusCode, ApiEnvelope<serde_json::Value>) =
+        parse_api_envelope(logout_response, "logout").await?;
+
+    if logout_status != StatusCode::OK || logout_envelope.code != 200 {
+        bail!(
+            "expected logout to succeed with HTTP 200/code 200, got HTTP {} code {} message '{}'",
+            logout_status,
+            logout_envelope.code,
+            logout_envelope.message
+        );
+    }
+
+    let refresh_response = client
+        .post(format!("{}/api/auth/refresh", api_base_url))
+        .header(reqwest::header::ORIGIN, origin.as_str())
+        .send()
+        .await
+        .context("failed to call /api/auth/refresh after logout")?;
+
+    let (refresh_status, refresh_envelope): (StatusCode, ApiEnvelope<serde_json::Value>) =
+        parse_api_envelope(refresh_response, "refresh after logout").await?;
+
+    if refresh_envelope.code != 401 {
+        bail!(
+            "expected refresh after logout to return api code 401, got HTTP {} code {} message '{}'",
+            refresh_status,
+            refresh_envelope.code,
+            refresh_envelope.message
+        );
+    }
+
+    let me_without_token = client
+        .get(format!("{}/api/me", api_base_url))
+        .send()
+        .await
+        .context("failed to call /api/me without token after logout")?;
+
+    let (me_without_token_status, me_without_token_envelope): (
+        StatusCode,
+        ApiEnvelope<serde_json::Value>,
+    ) = parse_api_envelope(me_without_token, "me without bearer token after logout").await?;
+
+    if me_without_token_status != StatusCode::UNAUTHORIZED || me_without_token_envelope.code != 401
+    {
+        bail!(
+            "expected /api/me without token after logout to fail with HTTP 401/code 401, got HTTP {} code {} message '{}'",
+            me_without_token_status,
+            me_without_token_envelope.code,
+            me_without_token_envelope.message
+        );
     }
 
     Ok(())
@@ -779,12 +891,13 @@ async fn fetch_skills_page_from_api(
             )
         })?;
 
-    let (_status, envelope): (StatusCode, ApiEnvelope<Vec<SkillListItemDto>>) =
+    let (_status, envelope): (StatusCode, ApiEnvelope<SkillListPageDto>) =
         parse_api_envelope(response, "list skills").await?;
 
-    let items = require_api_success(envelope, "list skills")?;
+    let page = require_api_success(envelope, "list skills")?;
 
-    Ok(items
+    Ok(page
+        .items
         .into_iter()
         .map(|item| SkillKey {
             owner: item.owner,
@@ -1156,6 +1269,23 @@ fn normalize_endpoint(endpoint: &str) -> String {
         // Most S3-compatible local endpoints (e.g. RustFS/MinIO) default to plain HTTP.
         format!("http://{}", trimmed)
     }
+}
+
+fn api_origin_from_base_url(api_base_url: &str) -> Result<String> {
+    let parsed = reqwest::Url::parse(api_base_url)
+        .with_context(|| format!("invalid E2E_API_BASE_URL: {}", api_base_url))?;
+
+    let scheme = parsed.scheme();
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("E2E_API_BASE_URL has no host: {}", api_base_url))?;
+
+    let origin = match parsed.port() {
+        Some(port) => format!("{}://{}:{}", scheme, host, port),
+        None => format!("{}://{}", scheme, host),
+    };
+
+    Ok(origin)
 }
 
 fn env_or(name: &str, default: &str) -> String {

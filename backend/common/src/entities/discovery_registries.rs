@@ -26,6 +26,9 @@ pub struct Model {
     pub last_health_message: Option<String>,
     pub last_health_checked_at: Option<DateTime>,
     pub last_run_at: Option<DateTime>,
+    pub last_run_status: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub last_run_message: Option<String>,
     pub next_run_at: Option<DateTime>,
     pub created_at: DateTime,
     pub updated_at: DateTime,

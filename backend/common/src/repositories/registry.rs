@@ -56,6 +56,17 @@ impl RegistryRepositoryImpl {
     }
 }
 
+fn host_match_condition(host: &str) -> Condition {
+    let normalized_host = host.trim().to_ascii_lowercase();
+    let url_https = format!("https://{}/%", normalized_host);
+    let url_http = format!("http://{}/%", normalized_host);
+
+    Condition::any()
+        .add(skill_registry::Column::Host.eq(normalized_host.clone()))
+        .add(skill_registry::Column::Url.like(url_https))
+        .add(skill_registry::Column::Url.like(url_http))
+}
+
 #[async_trait::async_trait]
 impl RegistryRepository for RegistryRepositoryImpl {
     async fn find_by_owner_repo(
@@ -77,18 +88,11 @@ impl RegistryRepository for RegistryRepositoryImpl {
         org: &str,
         repo: &str,
     ) -> Result<Option<skill_registry::Model>, DbErr> {
-        let url_https = format!("https://{}/%", host);
-        let url_http = format!("http://{}/%", host);
-
         SkillRegistry::find()
             .filter(skill_registry::Column::Owner.eq(org))
             .filter(skill_registry::Column::Name.eq(repo))
             .filter(skill_registry::Column::Status.ne("blacklisted"))
-            .filter(
-                Condition::any()
-                    .add(skill_registry::Column::Url.like(url_https))
-                    .add(skill_registry::Column::Url.like(url_http)),
-            )
+            .filter(host_match_condition(host))
             .one(self.db.as_ref())
             .await
     }

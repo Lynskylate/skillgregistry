@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react"
+import { FormEvent, useEffect, useRef, useState } from "react"
 import { api } from "@/lib/api"
 import type { ApiResponse } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
@@ -25,6 +25,8 @@ type DiscoveryRegistry = {
   last_health_message: string | null
   last_health_checked_at: string | null
   last_run_at: string | null
+  last_run_status: string | null
+  last_run_message: string | null
   next_run_at: string | null
   created_at: string
   updated_at: string
@@ -34,10 +36,19 @@ type HealthResult = {
   ok: boolean
   message: string
   checked_at: string
+  started_at?: string | null
 }
 
 type TriggerResult = {
+  ok: boolean
+  message: string
   workflow_id: string
+  started_at: string
+}
+
+type ValidateDeleteResponse = {
+  can_delete: boolean
+  reasons: string[]
 }
 
 function formatDateTime(value: string | null) {
@@ -83,12 +94,86 @@ export default function DiscoveryRegistries() {
   const [creating, setCreating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busyRowId, setBusyRowId] = useState<number | null>(null)
-  const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
+
+  const [deleteValidation, setDeleteValidation] = useState<{ id: number; reasons: string[] } | null>(null)
+  const [deleteConfirmationInput, setDeleteConfirmationInput] = useState("")
+  const deleteDialogRef = useRef<HTMLDivElement | null>(null)
+  const deleteInputRef = useRef<HTMLInputElement | null>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     fetchRegistries()
   }, [])
+
+  useEffect(() => {
+    if (!deleteValidation) return
+
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+
+    const dialog = deleteDialogRef.current
+    const focusSelector =
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+    const moveFocusIntoDialog = () => {
+      if (deleteInputRef.current) {
+        deleteInputRef.current.focus()
+        return
+      }
+      const firstFocusable = dialog?.querySelector<HTMLElement>(focusSelector)
+      firstFocusable?.focus()
+    }
+
+    const focusTimer = window.setTimeout(moveFocusIntoDialog, 0)
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!deleteValidation) return
+
+      if (event.key === "Escape") {
+        event.preventDefault()
+        setDeleteValidation(null)
+        return
+      }
+
+      if (event.key !== "Tab" || !dialog) return
+
+      const focusableElements = Array.from(dialog.querySelectorAll<HTMLElement>(focusSelector)).filter(
+        (element) => element.tabIndex !== -1,
+      )
+
+      if (focusableElements.length === 0) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+
+      const first = focusableElements[0]
+      const last = focusableElements[focusableElements.length - 1]
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+      if (event.shiftKey) {
+        if (!active || active === first || !dialog.contains(active)) {
+          event.preventDefault()
+          last.focus()
+        }
+      } else if (!active || active === last || !dialog.contains(active)) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown)
+
+    return () => {
+      window.clearTimeout(focusTimer)
+      document.removeEventListener("keydown", onKeyDown)
+      document.body.style.overflow = previousOverflow
+      previousFocusRef.current?.focus()
+    }
+  }, [deleteValidation])
 
   const fetchRegistries = async () => {
     setLoading(true)
@@ -144,7 +229,6 @@ export default function DiscoveryRegistries() {
   }
 
   const startEdit = (row: DiscoveryRegistry) => {
-    setConfirmingDeleteId(null)
     setEditing(row)
     setEditUrl(row.url)
     setEditQueries(row.queries.join("\n"))
@@ -179,15 +263,41 @@ export default function DiscoveryRegistries() {
     }
   }
 
+  const validateDelete = async (id: number) => {
+    setBusyRowId(id)
+    try {
+      const res = await api.post<ApiResponse<ValidateDeleteResponse>>(
+        `/api/admin/discovery-registries/${id}/validate-delete`,
+      )
+      if (res.data.code === 200 && res.data.data) {
+        setDeleteValidation({ id, reasons: res.data.data.reasons ?? [] })
+        setDeleteConfirmationInput("")
+      } else {
+        setActionMessage(res.data.message)
+      }
+    } catch (err: any) {
+      setActionMessage(err?.response?.data?.message ?? "Validation failed")
+    } finally {
+      setBusyRowId(null)
+    }
+  }
+
   const onDelete = async (id: number) => {
+    if (deleteValidation && deleteConfirmationInput !== deleteValidation.id.toString()) {
+      setActionMessage("Please type the correct registry ID to confirm")
+      return
+    }
+
     setBusyRowId(id)
     try {
       const res = await api.delete<ApiResponse<{ deleted: boolean }>>(
         `/api/admin/discovery-registries/${id}`,
+        { data: { confirmation_id: deleteConfirmationInput } },
       )
       if (res.data.code === 200) {
         setActionMessage("Discovery registry deleted")
-        setConfirmingDeleteId(null)
+        setDeleteValidation(null)
+        setDeleteConfirmationInput("")
         await fetchRegistries()
       } else {
         setActionMessage(res.data.message)
@@ -201,7 +311,6 @@ export default function DiscoveryRegistries() {
 
   const onTestHealth = async (id: number) => {
     setBusyRowId(id)
-    setConfirmingDeleteId(null)
     try {
       const res = await api.post<ApiResponse<HealthResult>>(
         `/api/admin/discovery-registries/${id}/test-health`,
@@ -222,16 +331,13 @@ export default function DiscoveryRegistries() {
 
   const onTrigger = async (id: number) => {
     setBusyRowId(id)
-    setConfirmingDeleteId(null)
     try {
       const res = await api.post<ApiResponse<TriggerResult>>(
         `/api/admin/discovery-registries/${id}/trigger`,
       )
       if (res.data.code === 200) {
-        const workflowId = res.data.data?.workflow_id
-        setActionMessage(
-          workflowId ? `Triggered workflow: ${workflowId}` : "Discovery trigger accepted",
-        )
+        const result = res.data.data
+        setActionMessage(result ? `${result.message}: ${result.workflow_id}` : "Discovery trigger accepted")
       } else {
         setActionMessage(res.data.message)
       }
@@ -278,15 +384,15 @@ export default function DiscoveryRegistries() {
           <p className="mt-2 text-2xl font-semibold text-emerald-600">{healthySources}</p>
         </div>
         <div className="rounded-lg border bg-card p-4">
-          <p className="text-xs uppercase text-muted-foreground">Need Attention</p>
+          <p className="text-xs uppercase text-muted-foreground">Needs Attention</p>
           <p className="mt-2 text-2xl font-semibold text-amber-600">{attentionSources}</p>
         </div>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
         <Card>
           <CardHeader>
-            <CardTitle>Create Registry</CardTitle>
+            <CardTitle>Add Discovery Source</CardTitle>
           </CardHeader>
           <CardContent>
             <form className="space-y-3" onSubmit={onCreate}>
@@ -298,6 +404,7 @@ export default function DiscoveryRegistries() {
                   value={createToken}
                   onChange={(e) => setCreateToken(e.target.value)}
                   placeholder="ghp_..."
+                  required
                 />
               </div>
               <div className="space-y-1">
@@ -391,95 +498,6 @@ export default function DiscoveryRegistries() {
         )}
       </div>
 
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Registered Sources</h2>
-          <Badge variant="outline">{registries.length} total</Badge>
-        </div>
-        <p className="text-xs text-muted-foreground">On smaller screens, cards are shown for quick scanning.</p>
-      </div>
-
-      <div className="space-y-3 md:hidden">
-        {loading ? (
-          Array.from({ length: 3 }).map((_, index) => (
-            <div key={index} className="rounded-lg border bg-card p-4 space-y-3">
-              <div className="h-4 w-32 animate-pulse rounded bg-muted" />
-              <div className="h-3 w-full animate-pulse rounded bg-muted" />
-              <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />
-            </div>
-          ))
-        ) : registries.length === 0 ? (
-          <div className="rounded-lg border bg-card p-6 text-center text-muted-foreground">
-            No discovery registries.
-          </div>
-        ) : (
-          registries.map((row) => {
-            const rowBusy = busyRowId === row.id
-            const confirmingDelete = confirmingDeleteId === row.id
-            return (
-              <article key={row.id} className="rounded-lg border bg-card p-4 space-y-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="font-medium">#{row.id} {row.provider}</p>
-                    <p className="text-xs text-muted-foreground break-all">{row.url}</p>
-                  </div>
-                  <Badge
-                    variant="outline"
-                    className={getHealthBadgeClasses(row.last_health_status)}
-                    title={row.last_health_message ?? undefined}
-                  >
-                    {row.last_health_status ?? "unknown"}
-                  </Badge>
-                </div>
-
-                <div className="space-y-1 text-xs text-muted-foreground">
-                  <p><span className="font-medium text-foreground">Queries:</span> {row.queries.join(", ")}</p>
-                  <p><span className="font-medium text-foreground">Interval:</span> {row.schedule_interval_seconds}s</p>
-                  <p><span className="font-medium text-foreground">Next Run:</span> {formatDateTime(row.next_run_at)}</p>
-                  <p><span className="font-medium text-foreground">Token:</span> {row.token_configured ? "Configured" : "Missing"}</p>
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" onClick={() => startEdit(row)} disabled={rowBusy}>
-                    Edit
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => onTestHealth(row.id)} disabled={rowBusy}>
-                    Test
-                  </Button>
-                  <Button size="sm" onClick={() => onTrigger(row.id)} disabled={rowBusy}>
-                    Trigger
-                  </Button>
-                  {confirmingDelete ? (
-                    <>
-                      <Button variant="destructive" size="sm" onClick={() => onDelete(row.id)} disabled={rowBusy}>
-                        Confirm Delete
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setConfirmingDeleteId(null)}
-                        disabled={rowBusy}
-                      >
-                        Cancel
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => setConfirmingDeleteId(row.id)}
-                      disabled={rowBusy}
-                    >
-                      Delete
-                    </Button>
-                  )}
-                </div>
-              </article>
-            )
-          })
-        )}
-      </div>
-
       <div className="hidden md:block border rounded-md">
         <Table>
           <TableHeader>
@@ -490,23 +508,24 @@ export default function DiscoveryRegistries() {
               <TableHead>Queries</TableHead>
               <TableHead>Interval</TableHead>
               <TableHead>Health</TableHead>
-              <TableHead>Next Run</TableHead>
+              <TableHead>Run Status</TableHead>
+              <TableHead>Run Message</TableHead>
+              <TableHead>Started At</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center py-6">Loading...</TableCell>
+                <TableCell colSpan={10} className="text-center py-6">Loading...</TableCell>
               </TableRow>
             ) : registries.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center py-6">No discovery registries</TableCell>
+                <TableCell colSpan={10} className="text-center py-6">No discovery registries</TableCell>
               </TableRow>
             ) : (
               registries.map((row) => {
                 const rowBusy = busyRowId === row.id
-                const confirmingDelete = confirmingDeleteId === row.id
                 return (
                   <TableRow key={row.id}>
                     <TableCell>{row.id}</TableCell>
@@ -523,7 +542,19 @@ export default function DiscoveryRegistries() {
                         {row.last_health_status ?? "unknown"}
                       </Badge>
                     </TableCell>
-                    <TableCell>{formatDateTime(row.next_run_at)}</TableCell>
+                    <TableCell>
+                      {row.last_run_status ? (
+                        <Badge variant={row.last_run_status === "success" ? "default" : "destructive"}>
+                          {row.last_run_status}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline">Never run</Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="max-w-72 truncate" title={row.last_run_message ?? undefined}>
+                      {row.last_run_message ?? "-"}
+                    </TableCell>
+                    <TableCell>{formatDateTime(row.last_run_at)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex flex-wrap justify-end gap-2">
                         <Button variant="outline" size="sm" onClick={() => startEdit(row)} disabled={rowBusy}>
@@ -535,30 +566,14 @@ export default function DiscoveryRegistries() {
                         <Button size="sm" onClick={() => onTrigger(row.id)} disabled={rowBusy}>
                           Trigger
                         </Button>
-                        {confirmingDelete ? (
-                          <>
-                            <Button variant="destructive" size="sm" onClick={() => onDelete(row.id)} disabled={rowBusy}>
-                              Confirm Delete
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setConfirmingDeleteId(null)}
-                              disabled={rowBusy}
-                            >
-                              Cancel
-                            </Button>
-                          </>
-                        ) : (
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => setConfirmingDeleteId(row.id)}
-                            disabled={rowBusy}
-                          >
-                            Delete
-                          </Button>
-                        )}
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => validateDelete(row.id)}
+                          disabled={rowBusy}
+                        >
+                          Delete
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -568,6 +583,61 @@ export default function DiscoveryRegistries() {
           </TableBody>
         </Table>
       </div>
+
+      {deleteValidation && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-registry-dialog-title"
+          aria-describedby="delete-registry-dialog-description"
+        >
+          <Card ref={deleteDialogRef} className="w-full max-w-md" tabIndex={-1}>
+            <CardHeader>
+              <CardTitle id="delete-registry-dialog-title">Confirm Deletion</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p id="delete-registry-dialog-description" className="text-sm text-muted-foreground">
+                This action permanently deletes the discovery registry.
+              </p>
+              {deleteValidation.reasons.length > 0 && (
+                <div className="space-y-2">
+                  <p className="font-medium">Please note:</p>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                    {deleteValidation.reasons.map((reason, index) => (
+                      <li key={`${reason}-${index}`}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div>
+                <label htmlFor="delete-registry-confirmation" className="text-sm font-medium">
+                  Type registry ID to confirm:
+                </label>
+                <Input
+                  id="delete-registry-confirmation"
+                  ref={deleteInputRef}
+                  value={deleteConfirmationInput}
+                  onChange={(e) => setDeleteConfirmationInput(e.target.value)}
+                  placeholder={deleteValidation.id.toString()}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setDeleteValidation(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => onDelete(deleteValidation.id)}
+                  disabled={deleteConfirmationInput !== deleteValidation.id.toString()}
+                >
+                  Delete Registry
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   )
 }

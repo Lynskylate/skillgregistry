@@ -2,6 +2,7 @@ use anyhow::Result;
 use aws_config::meta::region::RegionProviderChain;
 use aws_config::BehaviorVersion;
 use aws_credential_types::{provider::SharedCredentialsProvider, Credentials};
+use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::Client;
@@ -112,6 +113,26 @@ impl S3Service {
         let base_url = self.base_url.trim_end_matches('/');
         let url = format!("{}/{}/{}", base_url, self.bucket, key);
         Ok(url)
+    }
+
+    pub async fn get_presigned_url(
+        &self,
+        key: &str,
+        expires_in: std::time::Duration,
+    ) -> Result<String> {
+        let presigned_request = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .presigned(
+                PresigningConfig::expires_in(expires_in)
+                    .map_err(|e| anyhow::anyhow!("Presign config error: {}", e))?,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Presign error: {}", e))?;
+
+        Ok(presigned_request.uri().to_string())
     }
 
     pub async fn download_file(&self, key: &str) -> Result<Vec<u8>> {

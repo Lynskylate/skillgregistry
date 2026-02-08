@@ -48,6 +48,8 @@ pub trait DiscoveryRegistryRepository: Send + Sync {
         id: i32,
         last_run_at: chrono::NaiveDateTime,
         next_run_at: chrono::NaiveDateTime,
+        status: Option<String>,
+        message: Option<String>,
         updated_at: chrono::NaiveDateTime,
     ) -> Result<(), DbErr>;
 
@@ -110,6 +112,8 @@ impl DiscoveryRegistryRepository for DiscoveryRegistryRepositoryImpl {
             last_health_message: Set(None),
             last_health_checked_at: Set(None),
             last_run_at: Set(None),
+            last_run_status: Set(None),
+            last_run_message: Set(None),
             next_run_at: Set(Some(next_run_at)),
             created_at: Set(now),
             updated_at: Set(now),
@@ -164,11 +168,15 @@ impl DiscoveryRegistryRepository for DiscoveryRegistryRepositoryImpl {
         id: i32,
         last_run_at: chrono::NaiveDateTime,
         next_run_at: chrono::NaiveDateTime,
+        status: Option<String>,
+        message: Option<String>,
         updated_at: chrono::NaiveDateTime,
     ) -> Result<(), DbErr> {
         if let Some(existing) = self.find_by_id(id).await? {
             let mut active: discovery_registries::ActiveModel = existing.into();
             active.last_run_at = Set(Some(last_run_at));
+            active.last_run_status = Set(status);
+            active.last_run_message = Set(message);
             active.next_run_at = Set(Some(next_run_at));
             active.updated_at = Set(updated_at);
             active.update(self.db.as_ref()).await?;
